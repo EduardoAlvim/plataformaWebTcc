@@ -1,0 +1,1 @@
+Créditos arquivo GeoJSON de Minas Gerais: https://github.com/giuliano-macedo/geodata-br-states/tree/main
