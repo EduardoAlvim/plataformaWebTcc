@@ -14,6 +14,10 @@ st.title("Casos de Violência contra Mulher em Minas Gerais")
 
 st.write("Clique em um ponto do mapa para visualizar a cidade correspondente.")
 
+#Carregar a lista de cidades de Minas Gerais do json
+with open("cidades_mg.json", "r", encoding="utf-8") as f:
+    cidades_mg = json.load(f)
+
 # Definir limites do estado de Minas Gerais (coordenadas aproximadas)
 bounds = [[-23.5, -51.5], [-14.0, -39.5]]  # [Sudoeste, Nordeste]
 
@@ -26,8 +30,9 @@ m = folium.Map(
     location=[latitude_mg, longitude_mg], 
     zoom_start=zoom_mg, 
     min_zoom=6, 
-    max_zoom=10,
-    max_bounds=True  # Impede que o usuário mova o mapa para fora dos limites
+    max_zoom=10, 
+    tiles="cartodbdark_matter",  
+    max_bounds=True
 )
 
 # Carregar o arquivo GeoJSON com a fronteira de MG
@@ -40,14 +45,11 @@ folium.GeoJson(
     name="Minas Gerais",
     style_function=lambda feature: {
         "fillColor": "blue",
-        "color": "black",
+        "color": "white",
         "weight": 2,
-        "fillOpacity": 0.2,
+        "fillOpacity": 0.1,
     }
 ).add_to(m)
-
-# Adicionar plugin para exibir coordenadas ao passar o mouse
-MousePosition().add_to(m)
 
 # Capturar o clique do usuário
 map_data = st_folium(m, width=700, height=500)
@@ -72,4 +74,7 @@ if map_data and map_data["last_clicked"]:
     city_name = get_city_name(lat, lon)
 
     # Exibir o nome da cidade
-    st.subheader(f"📍 Cidade Selecionada: {city_name}")
+    if city_name in cidades_mg:
+        st.subheader(f"📍 Cidade Selecionada: {city_name}")
+    else:
+        st.error("❌ Por favor, selecione uma cidade dentro de Minas Gerais.")
