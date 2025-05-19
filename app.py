@@ -56,7 +56,10 @@ def consultar_dados(cidade, ano):
             return 0
 
         resultado = cursor.fetchone()
-        return resultado[0] if resultado else 0
+        if resultado and resultado[0] > 0:
+            return resultado[0]
+        else:
+            return "Sem registros neste ano"
 
     dados = {
         "Crimes Violentos": buscar_casos("crimesViolentos"),
