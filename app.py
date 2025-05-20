@@ -13,7 +13,7 @@ from gerarGraficos import gerar_grafico_anual_tabela, gerar_grafico_geral_anual,
 # ---------- CONFIGURAÇÕES INICIAIS ----------
 st.set_page_config(page_title="Mapa de Minas Gerais", layout="wide")
 st.title("Casos de Violência contra Mulher em Minas Gerais")
-st.write("Clique em uma cidade de Minas Gerais para ver os dados.")
+st.write("Escolha uma cidade de Minas Gerais para ver os dados.")
 
 # ---------- CARREGAMENTO DE DADOS ----------
 with open("cidades_mg.json", "r", encoding="utf-8") as f:
@@ -132,53 +132,62 @@ def mostrar_dados(cidade):
     else:
         st.error("❌ Por favor, selecione uma cidade dentro de Minas Gerais.")
 
-
-# ---------- MAPA ----------
-latitude_mg = -18.5122
-longitude_mg = -44.5550
-
-m = folium.Map(
-    location=[latitude_mg, longitude_mg],
-    zoom_start=6,
-    min_zoom=6,
-    max_zoom=10,
-    tiles="cartodbdark_matter",
-    max_bounds=True
-)
-
-# Adiciona o polígono de Minas Gerais
-folium.GeoJson(
-    geojson_mg,
-    name="Minas Gerais",
-    style_function=lambda feature: {
-        "fillColor": "blue",
-        "color": "white",
-        "weight": 1,
-        "fillOpacity": 0.5,
-    }
-).add_to(m)
-
-MousePosition().add_to(m)
-
-# ---------- SELEÇÃO POR PESQUISA ----------
-st.markdown("### 🔍 Ou pesquise diretamente pela cidade:")
-cidade_digitada = st.selectbox(
-    "Digite ou selecione a cidade:",
-    sorted(cidades_mg),  # ordena alfabeticamente
-    placeholder="Ex: Belo Horizonte"
-)
-
-
-# ---------- EXIBIÇÃO DO MAPA ----------
-map_data = st_folium(m, width=700, height=500)
-
 # ---------- INTERAÇÃO DO USUÁRIO ----------
+
+# Modo de seleção
+modo_selecao = st.radio(
+    "Como deseja selecionar a cidade?",
+    options=["Clique no mapa", "Pesquisar na lista"],
+    horizontal=True
+)
+
 cidade = None
-if map_data and map_data["last_clicked"]:
-    lat = map_data["last_clicked"]["lat"]
-    lon = map_data["last_clicked"]["lng"]
-    cidade = get_city_name(lat, lon)
+
+if modo_selecao == "Clique no mapa":
+    # ---------- MAPA ----------
+    latitude_mg = -18.5122
+    longitude_mg = -44.5550
+
+    m = folium.Map(
+        location=[latitude_mg, longitude_mg],
+        zoom_start=6,
+        min_zoom=6,
+        max_zoom=10,
+        tiles="cartodbdark_matter",
+        max_bounds=True
+    )
+
+    # Adiciona o polígono de Minas Gerais
+    folium.GeoJson(
+        geojson_mg,
+        name="Minas Gerais",
+        style_function=lambda feature: {
+            "fillColor": "blue",
+            "color": "white",
+            "weight": 1,
+            "fillOpacity": 0.5,
+        }
+    ).add_to(m)
+    # ---------- EXIBIÇÃO DO MAPA ----------
+    map_data = st_folium(m, width=700, height=500)
+    MousePosition().add_to(m)
+    if map_data and map_data["last_clicked"]:
+        lat = map_data["last_clicked"]["lat"]
+        lon = map_data["last_clicked"]["lng"]
+        cidade = get_city_name(lat, lon)
+
+elif modo_selecao == "Pesquisar na lista":
+    cidade_digitada = st.selectbox(
+        "Digite ou selecione a cidade:",
+        options=[""] + sorted(cidades_mg),
+        index=0,
+        placeholder="Ex: Belo Horizonte"
+    )
+    if cidade_digitada.strip():
+        cidade = cidade_digitada
+
+# Mostra os dados se uma cidade válida for selecionada
+if cidade:
     mostrar_dados(cidade)
-elif cidade_digitada:
-    cidade = cidade_digitada
-    mostrar_dados(cidade)
+
+
