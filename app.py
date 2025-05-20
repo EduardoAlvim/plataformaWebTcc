@@ -7,7 +7,7 @@ from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 from folium.plugins import MousePosition
-from gerarGraficos import gerar_grafico_por_tabela, gerar_grafico_geral
+from gerarGraficos import gerar_grafico_anual_tabela, gerar_grafico_geral_anual, gerar_grafico_geral_mensal, gerar_grafico_mensal_tabela
 
 
 # ---------- CONFIGURAÇÕES INICIAIS ----------
@@ -85,6 +85,54 @@ def normalizar_cidade(nome):
     nome = ''.join(c for c in nome if not unicodedata.combining(c))
     return nome.upper()
 
+def mostrar_dados(cidade):
+    if cidade in cidades_mg:
+        st.success(f"📍 Cidade Selecionada: {cidade}")
+
+        # Seleção do ano
+        ano = st.selectbox("Selecione o ano:", list(range(2010, 2025)))
+
+        # Consulta ao banco
+        if ano:
+            st.subheader(f"📊 Dados de {cidade} para o ano {ano}")
+
+            dados = consultar_dados(cidade, ano)
+
+            col1, col2 = st.columns(2)
+            col1.metric("Base de dados de Crimes Violentos (Polícia Civil)", dados["Crimes Violentos"])
+            col1.metric("Base de dados de Violência contra Mulher (SES)", dados["Violência SES"])
+            col2.metric("Base de dados de Violência contra Mulher (Polícia Civil)", dados["Violência PC"])
+            col2.metric("Base de dados de Feminicídio (Polícia Civil)", dados["Feminicídio"])
+
+            st.markdown("---")
+            st.subheader("📈 Evolução dos Casos ao Longo dos Anos")
+
+            # Gerar gráficos individuais por base
+            st.markdown("#### Crimes Violentos")
+            gerar_grafico_anual_tabela("crimesViolentos", cidade)
+            gerar_grafico_mensal_tabela ("crimesViolentos", cidade)
+
+            st.markdown("#### Violência SES")
+            gerar_grafico_anual_tabela("violenciaSES", cidade)
+            gerar_grafico_mensal_tabela("violenciaSES", cidade)
+
+            st.markdown("#### Violência PC")
+            gerar_grafico_anual_tabela("violenciaPc", cidade)
+            gerar_grafico_mensal_tabela("violenciaPc", cidade)
+
+            st.markdown("#### Feminicídio")
+            gerar_grafico_anual_tabela("feminicidio", cidade)
+            gerar_grafico_mensal_tabela("feminicidio", cidade)
+
+            # Gráfico geral somando todas as bases
+            st.markdown("#### Panorama Geral (Todos os Tipos)")
+            gerar_grafico_geral_anual(cidade)
+            gerar_grafico_geral_mensal(cidade)
+
+    else:
+        st.error("❌ Por favor, selecione uma cidade dentro de Minas Gerais.")
+
+
 # ---------- MAPA ----------
 latitude_mg = -18.5122
 longitude_mg = -44.5550
@@ -112,6 +160,15 @@ folium.GeoJson(
 
 MousePosition().add_to(m)
 
+# ---------- SELEÇÃO POR PESQUISA ----------
+st.markdown("### 🔍 Ou pesquise diretamente pela cidade:")
+cidade_digitada = st.selectbox(
+    "Digite ou selecione a cidade:",
+    sorted(cidades_mg),  # ordena alfabeticamente
+    placeholder="Ex: Belo Horizonte"
+)
+
+
 # ---------- EXIBIÇÃO DO MAPA ----------
 map_data = st_folium(m, width=700, height=500)
 
@@ -121,44 +178,7 @@ if map_data and map_data["last_clicked"]:
     lat = map_data["last_clicked"]["lat"]
     lon = map_data["last_clicked"]["lng"]
     cidade = get_city_name(lat, lon)
-
-    if cidade in cidades_mg:
-        st.success(f"📍 Cidade Selecionada: {cidade}")
-
-        # Seleção do ano
-        ano = st.selectbox("Selecione o ano:", list(range(2010, 2025)))
-
-        # Consulta ao banco
-        if ano:
-            st.subheader(f"📊 Dados de {cidade} para o ano {ano}")
-
-            dados = consultar_dados(cidade, ano)
-
-            col1, col2 = st.columns(2)
-            col1.metric("Base de dados de Crimes Violentos (Polícia Civil)", dados["Crimes Violentos"])
-            col1.metric("Base de dados de Violência contra Mulher (SES)", dados["Violência SES"])
-            col2.metric("Base de dados de Violência contra Mulher (Polícia Civil)", dados["Violência PC"])
-            col2.metric("Base de dados de Feminicídio (Polícia Civil)", dados["Feminicídio"])
-
-            st.markdown("---")
-            st.subheader("📈 Evolução dos Casos ao Longo dos Anos")
-
-            # Gerar gráficos individuais por base
-            st.markdown("#### Crimes Violentos")
-            gerar_grafico_por_tabela("crimesViolentos", cidade)
-
-            st.markdown("#### Violência SES")
-            gerar_grafico_por_tabela("violenciaSES", cidade)
-
-            st.markdown("#### Violência PC")
-            gerar_grafico_por_tabela("violenciaPc", cidade)
-
-            st.markdown("#### Feminicídio")
-            gerar_grafico_por_tabela("feminicidio", cidade)
-
-            # Gráfico geral somando todas as bases
-            st.markdown("#### Panorama Geral (Todos os Tipos)")
-            gerar_grafico_geral(cidade)
-
-    else:
-        st.error("❌ Por favor, selecione uma cidade dentro de Minas Gerais.")
+    mostrar_dados(cidade)
+elif cidade_digitada:
+    cidade = cidade_digitada
+    mostrar_dados(cidade)
