@@ -40,10 +40,7 @@ def consultar_dados(cidade, ano):
     cursor = conn.cursor()
 
     def buscar_casos(tabela):
-        if tabela == "crimesViolentos":
-            query = f"SELECT SUM(CAST(registros AS INT)) FROM {tabela} WHERE municipio = ? AND ano = ?"
-            cursor.execute(query, (normalizar_cidade(cidade), str(ano)))
-        elif tabela == "violenciaSES":
+        if tabela == "violenciaSES":
             query = f"SELECT COUNT(*) FROM {tabela} WHERE ID_MN_RESI = ? AND substr(DT_NOTIFIC, -4) = ?"
             cursor.execute(query, (cidade, str(ano)))
         elif tabela == "feminicidio":
@@ -65,7 +62,6 @@ def consultar_dados(cidade, ano):
             return "Sem registros neste ano"
 
     dados = {
-        "Crimes Violentos": buscar_casos("crimesViolentos"),
         "Violência SES": buscar_casos("violenciaSES"),
         "Violência PC": buscar_casos("violenciaPc"),
         "Feminicídio": buscar_casos("feminicidio")
@@ -99,7 +95,6 @@ def mostrar_dados(cidade):
             dados = consultar_dados(cidade, ano)
 
             col1, col2 = st.columns(2)
-            col1.metric("Base de dados de Crimes Violentos (Polícia Civil)", dados["Crimes Violentos"])
             col1.metric("Base de dados de Violência contra Mulher (SES)", dados["Violência SES"])
             col2.metric("Base de dados de Violência contra Mulher (Polícia Civil)", dados["Violência PC"])
             col2.metric("Base de dados de Feminicídio (Polícia Civil)", dados["Feminicídio"])
@@ -108,9 +103,6 @@ def mostrar_dados(cidade):
             st.subheader("📈 Evolução dos Casos ao Longo dos Anos")
 
             # Gerar gráficos individuais por base
-            st.markdown("#### Crimes Violentos")
-            gerar_grafico_anual_tabela("crimesViolentos", cidade)
-            gerar_grafico_mensal_tabela ("crimesViolentos", cidade)
 
             st.markdown("#### Violência SES")
             gerar_grafico_anual_tabela("violenciaSES", cidade)

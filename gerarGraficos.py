@@ -5,7 +5,6 @@ import unicodedata
 import streamlit as st
 
 titulos = {
-        "crimesViolentos": "Crimes Violentos (Polícia Civil)",
         "feminicidio": "Feminicídio (Polícia Civil)",
         "violenciaPc": "Violência contra Mulher (Polícia Civil)",
         "violenciaSES": "Violência contra Mulher (SES)"
@@ -26,14 +25,7 @@ def normalizar_cidade(nome):
 
 def gerar_grafico_anual_tabela(nome_tabela: str, cidade: str):
     conexao = sqlite3.connect("database.db")
-    if nome_tabela == "crimesViolentos":
-        query = f"""
-            SELECT ano, SUM(CAST(registros AS INT)) as total
-            FROM crimesViolentos
-            WHERE municipio = ?
-            GROUP BY ano
-        """
-    elif nome_tabela == "feminicidio":
+    if nome_tabela == "feminicidio":
         query = """
             SELECT ano, COUNT(*) as total
             FROM feminicidio
@@ -84,14 +76,7 @@ def gerar_grafico_anual_tabela(nome_tabela: str, cidade: str):
 
 def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str):
     conexao = sqlite3.connect("database.db")
-    if nome_tabela == "crimesViolentos":
-        query = f"""
-            SELECT mes, SUM(CAST(registros AS INT)) as total
-            FROM crimesViolentos
-            WHERE municipio = ?
-            GROUP BY mes
-        """
-    elif nome_tabela == "feminicidio":
+    if nome_tabela == "feminicidio":
         query = """
             SELECT mes, COUNT(*) as total
             FROM feminicidio
@@ -144,12 +129,6 @@ def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str):
 def gerar_grafico_geral_anual(cidade: str):
     conexao = sqlite3.connect("database.db")
     consultas = {
-        "crimesViolentos": """
-        SELECT ano, SUM(CAST(registros AS INT)) as total
-        FROM crimesViolentos
-        WHERE municipio = ?
-        GROUP BY ano
-        """,
         "feminicidio": """
             SELECT ano, COUNT(*) as total
             FROM feminicidio
@@ -204,12 +183,6 @@ def gerar_grafico_geral_anual(cidade: str):
 def gerar_grafico_geral_mensal(cidade: str):
     conexao = sqlite3.connect("database.db")
     consultas = {
-        "crimesViolentos": """
-        SELECT mes, SUM(CAST(registros AS INT)) as total
-        FROM crimesViolentos
-        WHERE municipio = ?
-        GROUP BY mes
-        """,
         "feminicidio": """
             SELECT mes, COUNT(*) as total
             FROM feminicidio
