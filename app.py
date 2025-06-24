@@ -81,48 +81,26 @@ def normalizar_cidade(nome):
     nome = ''.join(c for c in nome if not unicodedata.combining(c))
     return nome.upper()
 
-def mostrar_dados(cidade):
-    if cidade in cidades_mg:
-        st.success(f"📍 Cidade Selecionada: {cidade}")
+def mostrar_dados_resumo(cidade, ano, dados):
+    # Cabeçalho com nome e ano
+    st.markdown(f"""
+        <div style="background-color:#f0f8ff;padding:20px;border-radius:10px;margin-bottom:20px">
+            <h2 style="color:#004080;margin-bottom:5px;">{cidade}</h2>
+            <small style="color:gray;">Dados do ano de {ano}</small>
+        </div>
+    """, unsafe_allow_html=True)
 
-        # Seleção do ano
-        ano = st.selectbox("Selecione o ano:", list(range(2010, 2025)))
+    # Indicadores principais
+    st.markdown("### 🔹 Indicadores principais")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("👩‍⚕️ Violência SES", dados["Violência SES"])
+    with col2:
+        st.metric("🚔 Violência PC", dados["Violência PC"])
+    with col3:
+        st.metric("🟥 Feminicídio", dados["Feminicídio"])
 
-        # Consulta ao banco
-        if ano:
-            st.subheader(f"📊 Dados de {cidade} para o ano {ano}")
 
-            dados = consultar_dados(cidade, ano)
-
-            col1, col2 = st.columns(2)
-            col1.metric("Base de dados de Violência contra Mulher (SES)", dados["Violência SES"])
-            col2.metric("Base de dados de Violência contra Mulher (Polícia Civil)", dados["Violência PC"])
-            col2.metric("Base de dados de Feminicídio (Polícia Civil)", dados["Feminicídio"])
-
-            st.markdown("---")
-            st.subheader("📈 Evolução dos Casos ao Longo dos Anos")
-
-            # Gerar gráficos individuais por base
-
-            st.markdown("#### Violência SES")
-            gerar_grafico_anual_tabela("violenciaSES", cidade)
-            gerar_grafico_mensal_tabela("violenciaSES", cidade)
-
-            st.markdown("#### Violência PC")
-            gerar_grafico_anual_tabela("violenciaPc", cidade)
-            gerar_grafico_mensal_tabela("violenciaPc", cidade)
-
-            st.markdown("#### Feminicídio")
-            gerar_grafico_anual_tabela("feminicidio", cidade)
-            gerar_grafico_mensal_tabela("feminicidio", cidade)
-
-            # Gráfico geral somando todas as bases
-            st.markdown("#### Panorama Geral (Todos os Tipos)")
-            gerar_grafico_geral_anual(cidade)
-            gerar_grafico_geral_mensal(cidade)
-
-    else:
-        st.error("❌ Por favor, selecione uma cidade dentro de Minas Gerais.")
 
 # ---------- INTERAÇÃO DO USUÁRIO ----------
 
@@ -178,11 +156,43 @@ if cidade:
     else:
         st.warning("⚠️ Cidade não encontrada no arquivo GeoJSON.")
 
-# Exibe o mapa no app
-st_folium(m, width=700, height=500)
-
 # Mostra os dados se uma cidade válida foi selecionada
 if cidade:
-    mostrar_dados(cidade)
+    # Seleção de ano (fora das colunas para usar nos dados e gráficos)
+    ano = st.selectbox("Selecione o ano:", list(range(2010, 2025)))
+
+    if ano:
+        dados = consultar_dados(cidade, ano)
+
+        col_mapa, col_dados = st.columns([0.5, 0.5])
+
+        with col_mapa:
+            st_folium(m, width=450, height=500)
+
+        with col_dados:
+            mostrar_dados_resumo(cidade, ano, dados)
+
+        # Gráficos abaixo, fora das colunas
+        st.markdown("---")
+        st.markdown("### 📊 Evolução dos Casos por Tipo")
+
+        st.markdown("#### 🔵 Violência SES")
+        gerar_grafico_anual_tabela("violenciaSES", cidade)
+        gerar_grafico_mensal_tabela("violenciaSES", cidade)
+
+        st.markdown("#### 🟠 Violência PC")
+        gerar_grafico_anual_tabela("violenciaPc", cidade)
+        gerar_grafico_mensal_tabela("violenciaPc", cidade)
+
+        st.markdown("#### 🔴 Feminicídio")
+        gerar_grafico_anual_tabela("feminicidio", cidade)
+        gerar_grafico_mensal_tabela("feminicidio", cidade)
+
+        st.markdown("---")
+        st.markdown("### 📈 Panorama Geral de Casos (Todas as Fontes)")
+        gerar_grafico_geral_anual(cidade)
+        gerar_grafico_geral_mensal(cidade)
+
+
 
 
