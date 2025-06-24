@@ -126,59 +126,62 @@ def mostrar_dados(cidade):
 
 # ---------- INTERAÇÃO DO USUÁRIO ----------
 
-# Modo de seleção
-modo_selecao = st.radio(
-    "Como deseja selecionar a cidade?",
-    options=["Clique no mapa", "Pesquisar na lista"],
-    horizontal=True
+cidade = st.selectbox(
+    "Digite ou selecione a cidade:",
+    options=[""] + sorted(cidades_mg),
+    index=0,
+    placeholder="Ex: Belo Horizonte"
 )
 
-cidade = None
+def buscar_poligono_cidade(nome_cidade):
+    for feature in geojson_mg["features"]:
+        props = feature.get("properties", {})
+        nome = props.get("name", "")
+        if normalizar_cidade(nome) == normalizar_cidade(nome_cidade):
+            return feature
+    return None
 
-if modo_selecao == "Clique no mapa":
-    # ---------- MAPA ----------
-    latitude_mg = -18.5122
-    longitude_mg = -44.5550
+# ---------- MAPA ----------
+m = folium.Map(
+    location=[-18.5122, -44.5550],
+    zoom_start=6,
+    tiles="cartodbdark_matter"
+)
 
-    m = folium.Map(
-        location=[latitude_mg, longitude_mg],
-        zoom_start=6,
-        min_zoom=6,
-        max_zoom=10,
-        tiles="cartodbdark_matter",
-        max_bounds=True
-    )
+# Adiciona todos os municípios de MG (região demarcada em azul)
+folium.GeoJson(
+    geojson_mg,
+    name="Minas Gerais",
+    style_function=lambda feature: {
+        "fillColor": "blue",
+        "color": "white",
+        "weight": 1,
+        "fillOpacity": 0.2
+    }
+).add_to(m)
 
-    # Adiciona o polígono de Minas Gerais
-    folium.GeoJson(
-        geojson_mg,
-        name="Minas Gerais",
-        style_function=lambda feature: {
-            "fillColor": "blue",
-            "color": "white",
-            "weight": 1,
-            "fillOpacity": 0.5,
-        }
-    ).add_to(m)
-    # ---------- EXIBIÇÃO DO MAPA ----------
-    map_data = st_folium(m, width=700, height=500)
-    MousePosition().add_to(m)
-    if map_data and map_data["last_clicked"]:
-        lat = map_data["last_clicked"]["lat"]
-        lon = map_data["last_clicked"]["lng"]
-        cidade = get_city_name(lat, lon)
+# Adiciona o polígono da cidade selecionada (destacada em vermelho)
+if cidade:
+    poligono = buscar_poligono_cidade(cidade)
+    if poligono:
+        folium.GeoJson(
+            poligono,
+            name=cidade,
+            style_function=lambda feature: {
+                "fillColor": "red",
+                "color": "yellow",
+                "weight": 3,
+                "fillOpacity": 0.4
+            },
+            tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["Cidade:"])
+        ).add_to(m)
+    else:
+        st.warning("⚠️ Cidade não encontrada no arquivo GeoJSON.")
 
-elif modo_selecao == "Pesquisar na lista":
-    cidade_digitada = st.selectbox(
-        "Digite ou selecione a cidade:",
-        options=[""] + sorted(cidades_mg),
-        index=0,
-        placeholder="Ex: Belo Horizonte"
-    )
-    if cidade_digitada.strip():
-        cidade = cidade_digitada
+# Exibe o mapa no app
+st_folium(m, width=700, height=500)
 
-# Mostra os dados se uma cidade válida for selecionada
+# Mostra os dados se uma cidade válida foi selecionada
 if cidade:
     mostrar_dados(cidade)
 
