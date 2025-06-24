@@ -7,7 +7,7 @@ from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 from folium.plugins import MousePosition
-from gerarGraficos import gerar_grafico_anual_tabela, gerar_grafico_geral_anual, gerar_grafico_geral_mensal, gerar_grafico_mensal_tabela
+from gerarGraficos import gerar_grafico_anual_tabela, gerar_grafico_geral_anual, gerar_grafico_geral_mensal, gerar_grafico_mensal_tabela, gerar_grafico_anual_tabela_mg, gerar_grafico_geral_anual_mg, gerar_grafico_geral_mensal_mg, gerar_grafico_mensal_tabela_mg
 
 
 # ---------- CONFIGURAÇÕES INICIAIS ----------
@@ -40,26 +40,30 @@ def consultar_dados(cidade, ano):
     cursor = conn.cursor()
 
     def buscar_casos(tabela):
-        if tabela == "violenciaSES":
-            query = f"SELECT COUNT(*) FROM {tabela} WHERE ID_MN_RESI = ? AND substr(DT_NOTIFIC, -4) = ?"
-            cursor.execute(query, (cidade, str(ano)))
-        elif tabela == "feminicidio":
-            normalizar_cidade(cidade)
-            query = f"SELECT COUNT(*) FROM {tabela} WHERE municipio_fato = ? AND ano = ?"
-            cursor.execute(query, (normalizar_cidade(cidade), str(ano)))
-        elif tabela == "violenciaPc":
-            normalizar_cidade(cidade)
-            query = f"SELECT COUNT(*) FROM {tabela} WHERE municipio_fato = ? AND ano = ?"
-            cursor.execute(query, (normalizar_cidade(cidade), str(ano)))
+        if not cidade.strip():  # cidade vazia
+            # Consulta geral (Minas Gerais)
+            if tabela == "violenciaSES":
+                query = f"SELECT COUNT(*) FROM {tabela} WHERE substr(DT_NOTIFIC, -4) = ?"
+                cursor.execute(query, (str(ano),))
+            elif tabela in ["feminicidio", "violenciaPc"]:
+                query = f"SELECT COUNT(*) FROM {tabela} WHERE ano = ?"
+                cursor.execute(query, (str(ano),))
+            else:
+                return 0
         else:
-            return 0
+            # Consulta por cidade
+            if tabela == "violenciaSES":
+                query = f"SELECT COUNT(*) FROM {tabela} WHERE ID_MN_RESI = ? AND substr(DT_NOTIFIC, -4) = ?"
+                cursor.execute(query, (cidade, str(ano)))
+            elif tabela in ["feminicidio", "violenciaPc"]:
+                query = f"SELECT COUNT(*) FROM {tabela} WHERE municipio_fato = ? AND ano = ?"
+                cursor.execute(query, (normalizar_cidade(cidade), str(ano)))
+            else:
+                return 0
 
         resultado = cursor.fetchone()
         valor = resultado[0] if resultado else 0
-        if valor is not None and valor > 0:
-            return valor
-        else:
-            return "Sem registros neste ano"
+        return valor if valor > 0 else "Sem registros neste ano"
 
     dados = {
         "Violência SES": buscar_casos("violenciaSES"),
@@ -69,6 +73,8 @@ def consultar_dados(cidade, ano):
 
     conn.close()
     return dados
+
+
 
 def normalizar_cidade(nome):
     """
@@ -82,10 +88,11 @@ def normalizar_cidade(nome):
     return nome.upper()
 
 def mostrar_dados_resumo(cidade, ano, dados):
-    # Cabeçalho com nome e ano
+    nome_exibicao = "Minas Gerais" if not cidade.strip() else cidade
+
     st.markdown(f"""
         <div style="background-color:#f0f8ff;padding:20px;border-radius:10px;margin-bottom:20px">
-            <h2 style="color:#004080;margin-bottom:5px;">{cidade}</h2>
+            <h2 style="color:#004080;margin-bottom:5px;">{nome_exibicao}</h2>
             <small style="color:gray;">Dados do ano de {ano}</small>
         </div>
     """, unsafe_allow_html=True)
@@ -99,6 +106,7 @@ def mostrar_dados_resumo(cidade, ano, dados):
         st.metric("🚔 Violência PC", dados["Violência PC"])
     with col3:
         st.metric("🟥 Feminicídio", dados["Feminicídio"])
+
 
 
 
@@ -156,23 +164,44 @@ if cidade:
     else:
         st.warning("⚠️ Cidade não encontrada no arquivo GeoJSON.")
 
-# Mostra os dados se uma cidade válida foi selecionada
-if cidade:
-    # Seleção de ano (fora das colunas para usar nos dados e gráficos)
-    ano = st.selectbox("Selecione o ano:", list(range(2010, 2025)))
+# Sempre mostra seleção e mapa, mesmo que nenhuma cidade seja escolhida
+ano = st.selectbox("Selecione o ano:", list(range(2010, 2025)))
 
-    if ano:
-        dados = consultar_dados(cidade, ano)
+if ano is not None:
+    dados = consultar_dados(cidade, ano)
 
-        col_mapa, col_dados = st.columns([0.5, 0.5])
+    col_mapa, col_dados = st.columns([0.5, 0.5])
 
-        with col_mapa:
-            st_folium(m, width=450, height=500)
+    with col_mapa:
+        st_folium(m, width=450, height=500)
 
-        with col_dados:
-            mostrar_dados_resumo(cidade, ano, dados)
+    with col_dados:
+        mostrar_dados_resumo(cidade, ano, dados)
+        if not cidade.strip():
+            st.info("Exibindo os dados gerais do estado de Minas Gerais.")
 
-        # Gráficos abaixo, fora das colunas
+    # Gráficos apenas se cidade for selecionada
+    if not cidade.strip():
+        st.markdown("---")
+        st.markdown("### 📊 Evolução dos Casos por Tipo")
+
+        st.markdown("#### 🔵 Violência SES")
+        gerar_grafico_anual_tabela_mg("violenciaSES")
+        gerar_grafico_mensal_tabela_mg("violenciaSES")
+
+        st.markdown("#### 🟠 Violência PC")
+        gerar_grafico_anual_tabela_mg("violenciaPc")
+        gerar_grafico_mensal_tabela_mg("violenciaPc")
+
+        st.markdown("#### 🔴 Feminicídio")
+        gerar_grafico_anual_tabela_mg("feminicidio")
+        gerar_grafico_mensal_tabela_mg("feminicidio")
+
+        st.markdown("---")
+        st.markdown("### 📈 Panorama Geral de Casos (Todas as Fontes)")
+        gerar_grafico_geral_anual_mg()
+        gerar_grafico_geral_mensal_mg()
+    else:
         st.markdown("---")
         st.markdown("### 📊 Evolução dos Casos por Tipo")
 
@@ -192,6 +221,7 @@ if cidade:
         st.markdown("### 📈 Panorama Geral de Casos (Todas as Fontes)")
         gerar_grafico_geral_anual(cidade)
         gerar_grafico_geral_mensal(cidade)
+
 
 
 
