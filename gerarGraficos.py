@@ -250,7 +250,13 @@ def gerar_grafico_relacao_escolaridade_violencia(filtro=""):
     ax.grid(True, linestyle="--", alpha=0.35)
     fig.tight_layout()
     st.pyplot(fig)
-    correlacao = x.corr(y, method="spearman") if len(df) > 2 else float("nan")
+    # Spearman equivale à correlação de Pearson entre os postos. Calcular assim
+    # evita a dependência opcional de scipy, que pandas importa internamente.
+    correlacao = (
+        x.rank(method="average").corr(y.rank(method="average"))
+        if len(df) > 2
+        else float("nan")
+    )
     st.caption(
         f"Associação exploratória entre {len(df)} municípios em 2022. "
         f"Correlação de Spearman: {correlacao:.2f}. A relação observada não demonstra causalidade."
