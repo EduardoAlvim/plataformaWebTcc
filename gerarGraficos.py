@@ -3,6 +3,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import unicodedata
 import streamlit as st
+import numpy as np
 
 titulos = {
         "feminicidio": "Feminicídio (Polícia Civil)",
@@ -68,6 +69,62 @@ def aplicar_filtro(query, tabela, filtro):
     else:
         query += f" WHERE {condicao}"
     return query, (parametro,)
+
+
+def gerar_grafico_relacao_escolaridade_violencia(filtro=""):
+    """Mostra associação municipal exploratória para o ano comum de 2022."""
+    if filtro and filtro not in REGIOES:
+        return st.info("Selecione Minas Gerais ou uma região para comparar vários municípios.")
+
+    conexao = sqlite3.connect("database.db")
+    query = """
+        SELECT d.municipio_nome,
+               100.0 * c.populacao_18mais_superior / NULLIF(c.populacao_18mais, 0)
+                   AS superior_completo_pct,
+               100000.0 * COALESCE(v.vitimas, 0) / NULLIF(c.populacao_feminina, 0)
+                   AS vitimas_por_100mil_mulheres
+        FROM dimensao_municipio d
+        JOIN indicadores_ibge_censo2022 c USING (municipio_cod)
+        LEFT JOIN (
+            SELECT municipio_cod,
+                   SUM(CAST(REPLACE(qtde_vitimas, ',', '.') AS REAL)) AS vitimas
+            FROM violenciaPc
+            WHERE CAST(ano AS INTEGER) = 2022
+            GROUP BY municipio_cod
+        ) v USING (municipio_cod)
+        WHERE 1=1
+    """
+    parametros = ()
+    if filtro in REGIOES:
+        query += " AND d.classificacao = ?"
+        parametros = (filtro,)
+
+    df = pd.read_sql_query(query, conexao, params=parametros)
+    conexao.close()
+    df = df.dropna(subset=["superior_completo_pct", "vitimas_por_100mil_mulheres"])
+    if df.empty:
+        return st.info("Não há indicadores suficientes para montar a análise de 2022.")
+
+    x = df["superior_completo_pct"]
+    y = df["vitimas_por_100mil_mulheres"]
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.scatter(x, y, color="teal", alpha=0.55, edgecolors="none")
+    if len(df) > 2 and x.nunique() > 1:
+        coeficientes = np.polyfit(x, y, 1)
+        linha_x = np.linspace(x.min(), x.max(), 100)
+        ax.plot(linha_x, np.polyval(coeficientes, linha_x), color="darkorange", linewidth=2)
+    ax.set_xlabel("Adultos (18+) com ensino superior completo (%) — Censo 2022")
+    ax.set_ylabel("Vítimas registradas na PC por 100 mil mulheres (Censo 2022) — 2022")
+    local = filtro or "Minas Gerais"
+    ax.set_title(f"Escolaridade e violência registrada em {local}")
+    ax.grid(True, linestyle="--", alpha=0.35)
+    fig.tight_layout()
+    st.pyplot(fig)
+    correlacao = x.corr(y, method="spearman") if len(df) > 2 else float("nan")
+    st.caption(
+        f"Associação exploratória entre {len(df)} municípios em 2022. "
+        f"Correlação de Spearman: {correlacao:.2f}. A relação observada não demonstra causalidade."
+    )
 
 
 def gerar_grafico_anual_tabela(nome_tabela: str, cidade: str):

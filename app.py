@@ -7,7 +7,13 @@ from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
 from folium.plugins import MousePosition
-from gerarGraficos import gerar_grafico_anual_tabela, gerar_grafico_geral_anual, gerar_grafico_geral_mensal, gerar_grafico_mensal_tabela, gerar_grafico_anual_tabela_mg, gerar_grafico_geral_anual_mg, gerar_grafico_geral_mensal_mg, gerar_grafico_mensal_tabela_mg
+from gerarGraficos import (
+    gerar_grafico_anual_tabela,
+    gerar_grafico_geral_anual,
+    gerar_grafico_geral_mensal,
+    gerar_grafico_mensal_tabela,
+    gerar_grafico_relacao_escolaridade_violencia,
+)
 
 
 # ---------- CONFIGURAÇÕES INICIAIS ----------
@@ -76,6 +82,101 @@ def consultar_dados(filtro, ano):
 
     conn.close()
     return dados
+
+
+def consultar_indicadores_ibge(filtro, ano):
+    conn = sqlite3.connect("database.db")
+    parametros = []
+    condicao = "1=1"
+    regioes = {"Interior de MG", "RMBH", "Belo Horizonte"}
+    if filtro in regioes:
+        condicao = "classificacao = ?"
+        parametros.append(filtro)
+    elif filtro:
+        condicao = (
+            "REPLACE(REPLACE(municipio_nome, '-', ''), ' ', '') = "
+            "REPLACE(REPLACE(?, '-', ''), ' ', '')"
+        )
+        parametros.append(normalizar_cidade(filtro))
+
+    codigos = [
+        row[0] for row in conn.execute(
+            f"SELECT municipio_cod FROM dimensao_municipio WHERE {condicao}",
+            parametros,
+        )
+    ]
+    if not codigos:
+        conn.close()
+        return {}
+
+    marcadores = ",".join("?" for _ in codigos)
+    pop = conn.execute(
+        f"SELECT SUM(populacao_estimada) FROM indicadores_ibge_anual "
+        f"WHERE ano = ? AND municipio_cod IN ({marcadores})",
+        [ano, *codigos],
+    ).fetchone()[0]
+
+    ano_pib = conn.execute(
+        f"SELECT MAX(ano) FROM indicadores_ibge_anual WHERE ano <= ? "
+        f"AND pib_mil_reais IS NOT NULL AND municipio_cod IN ({marcadores})",
+        [ano, *codigos],
+    ).fetchone()[0]
+    ano_pib_pc = conn.execute(
+        f"SELECT MAX(ano) FROM indicadores_ibge_anual WHERE ano <= ? "
+        f"AND pib_mil_reais IS NOT NULL AND populacao_estimada IS NOT NULL "
+        f"AND municipio_cod IN ({marcadores})",
+        [ano, *codigos],
+    ).fetchone()[0]
+    pib_mil = None
+    if ano_pib is not None:
+        pib_mil = conn.execute(
+            f"SELECT SUM(pib_mil_reais) "
+            f"FROM indicadores_ibge_anual WHERE ano = ? AND municipio_cod IN ({marcadores})",
+            [ano_pib, *codigos],
+        ).fetchone()[0]
+    pib_pc_mil, populacao_pib = (None, None)
+    if ano_pib_pc is not None:
+        pib_pc_mil, populacao_pib = conn.execute(
+            f"SELECT SUM(pib_mil_reais), SUM(populacao_estimada) "
+            f"FROM indicadores_ibge_anual WHERE ano = ? AND municipio_cod IN ({marcadores})",
+            [ano_pib_pc, *codigos],
+        ).fetchone()
+
+    censo = conn.execute(
+        f"SELECT SUM(populacao_censo), SUM(area_km2), SUM(populacao_18mais), "
+        f"SUM(populacao_18mais_superior), SUM(populacao_18mais_baixa_escolaridade), "
+        f"SUM(populacao_feminina) "
+        f"FROM indicadores_ibge_censo2022 WHERE municipio_cod IN ({marcadores})",
+        codigos,
+    ).fetchone()
+    conn.close()
+
+    populacao_censo, area_km2, adultos, adultos_superior, adultos_escolaridade_baixa, mulheres_censo = censo
+    densidade = populacao_censo / area_km2 if populacao_censo and area_km2 else None
+    percentual_superior = (
+        100 * adultos_superior / adultos if adultos and adultos_superior is not None else None
+    )
+    percentual_escolaridade_baixa = (
+        100 * adultos_escolaridade_baixa / adultos
+        if adultos and adultos_escolaridade_baixa is not None else None
+    )
+    pib_per_capita = (
+        pib_pc_mil * 1000 / populacao_pib
+        if pib_pc_mil is not None and populacao_pib else None
+    )
+    return {
+        "populacao_estimada": pop,
+        "populacao_censo": populacao_censo,
+        "populacao_feminina": mulheres_censo,
+        "area_km2": area_km2,
+        "densidade": densidade,
+        "ano_pib": ano_pib,
+        "ano_pib_pc": ano_pib_pc,
+        "pib_mil_reais": pib_mil,
+        "pib_per_capita": pib_per_capita,
+        "percentual_superior": percentual_superior,
+        "percentual_escolaridade_baixa": percentual_escolaridade_baixa,
+    }
 
 
 
@@ -192,6 +293,83 @@ if ano is not None:
         mostrar_dados_resumo(filtro, ano, dados)
         if not filtro:
             st.info("Exibindo os dados gerais do estado de Minas Gerais.")
+
+    indicadores = consultar_indicadores_ibge(filtro, ano)
+    if indicadores:
+        def formatar_numero(valor, casas=0):
+            if valor is None:
+                return "Sem dados"
+            return f"{valor:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+        st.markdown("---")
+        st.subheader("Perfil demográfico, econômico e educacional")
+        st.caption(
+            "Fontes: IBGE/SIDRA (tabelas 6579, 4714, 10061 e 5938). "
+            "O ano de referência aparece em cada indicador; o PIB per capita é calculado "
+            "a partir do PIB e da população estimada no mesmo ano."
+        )
+        indicadores_linha1 = st.columns(4)
+        if ano == 2022:
+            populacao_selecionada = indicadores["populacao_censo"]
+            rotulo_populacao = "População no Censo (2022)"
+            rotulo_populacao_censo = "Área territorial (2022)"
+            valor_populacao_censo = (
+                f"{formatar_numero(indicadores['area_km2'], 2)} km²"
+                if indicadores["area_km2"] is not None else "Sem dados"
+            )
+        else:
+            populacao_selecionada = indicadores["populacao_estimada"]
+            rotulo_populacao = f"População estimada ({ano})"
+            rotulo_populacao_censo = "População do Censo 2022"
+            valor_populacao_censo = formatar_numero(indicadores["populacao_censo"])
+        indicadores_linha1[0].metric(
+            rotulo_populacao,
+            formatar_numero(populacao_selecionada),
+        )
+        indicadores_linha1[1].metric(
+            rotulo_populacao_censo,
+            valor_populacao_censo,
+        )
+        indicadores_linha1[2].metric(
+            "Densidade demográfica (2022)",
+            f"{formatar_numero(indicadores['densidade'], 2)} hab./km²"
+            if indicadores["densidade"] is not None else "Sem dados",
+        )
+        pib_bilhoes = (
+            indicadores["pib_mil_reais"] / 1_000_000
+            if indicadores["pib_mil_reais"] is not None else None
+        )
+        indicadores_linha1[3].metric(
+            f"PIB total ({indicadores['ano_pib']})" if indicadores["ano_pib"] else "PIB total",
+            f"R$ {formatar_numero(pib_bilhoes, 2)} bi" if pib_bilhoes is not None else "Sem dados",
+        )
+
+        indicadores_linha2 = st.columns(3)
+        pib_per_capita = indicadores["pib_per_capita"]
+        indicadores_linha2[0].metric(
+            f"PIB per capita ({indicadores['ano_pib_pc']})" if indicadores["ano_pib_pc"] else "PIB per capita",
+            f"R$ {formatar_numero(pib_per_capita, 2)}"
+            if pib_per_capita is not None else "Sem dados",
+        )
+        indicadores_linha2[1].metric(
+            "Adultos com superior completo (2022)",
+            f"{formatar_numero(indicadores['percentual_superior'], 2)}%"
+            if indicadores["percentual_superior"] is not None else "Sem dados",
+        )
+        indicadores_linha2[2].metric(
+            "Adultos sem instrução/fundamental incompleto (2022)",
+            f"{formatar_numero(indicadores['percentual_escolaridade_baixa'], 2)}%"
+            if indicadores["percentual_escolaridade_baixa"] is not None else "Sem dados",
+        )
+
+        st.markdown("### Relação exploratória entre escolaridade e violência")
+        if ano == 2022:
+            gerar_grafico_relacao_escolaridade_violencia(filtro)
+        else:
+            st.caption(
+                "A comparação municipal com escolaridade está disponível para 2022, "
+                "ano de referência comum entre o Censo e os registros da Polícia Civil."
+            )
 
     st.markdown("---")
     st.markdown("### 📊 Evolução dos Casos por Tipo")
