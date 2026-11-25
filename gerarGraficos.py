@@ -112,8 +112,11 @@ def _condicoes_demograficas_ses(filtro, ano, orientacao, identidade, raca):
             THEN substr(trim(DT_NOTIFIC), 1, 4)
         ELSE substr(trim(DT_NOTIFIC), -4)
     END AS INTEGER)"""
-    condicoes = [f"{ano_notificacao} = ?"]
-    parametros = [ano]
+    condicoes = []
+    parametros = []
+    if ano is not None:
+        condicoes.append(f"{ano_notificacao} = ?")
+        parametros.append(ano)
 
     if filtro in REGIOES:
         condicoes.append(
@@ -134,7 +137,7 @@ def _condicoes_demograficas_ses(filtro, ano, orientacao, identidade, raca):
             condicoes.append(f"COALESCE(TRIM({coluna}), '') = ?")
             parametros.append(valor)
 
-    return " AND ".join(condicoes), parametros
+    return (" AND ".join(condicoes) if condicoes else "1=1"), parametros
 
 
 def gerar_grafico_demografico_ses(
@@ -161,7 +164,7 @@ def gerar_grafico_demografico_ses(
     with sqlite3.connect("database.db") as conexao:
         df = pd.read_sql_query(query, conexao, params=parametros)
     if df.empty:
-        return st.info("Não há notificações SES para essa combinação de ano, local e filtros.")
+        return st.info("Não há notificações SES para essa combinação de período e local.")
 
     df = df.sort_values("total", ascending=True)
     fig, ax = plt.subplots(figsize=(10, max(4, len(df) * 0.38)))
@@ -169,7 +172,8 @@ def gerar_grafico_demografico_ses(
     _rotular_barras(ax, barras, horizontal=True)
     ax.set_xlabel("Notificações SES")
     ax.set_ylabel(dimensao)
-    ax.set_title(f"Notificações SES por {dimensao.lower()} — {ano}")
+    periodo = "todo o histórico" if ano is None else str(ano)
+    ax.set_title(f"Notificações SES por {dimensao.lower()} — {periodo}")
     ax.grid(axis="x", linestyle="--", alpha=0.3)
     _exibir_grafico(fig, ax)
 
@@ -194,33 +198,37 @@ def gerar_grafico_tipos_violencia_ses(
     categorias = ["Física", "Psicológica", "Sexual", "Lesão autoprovocada"]
     df = pd.DataFrame({"tipo": categorias, "total": [valor or 0 for valor in valores]})
     if not df["total"].sum():
-        return st.info("Não há notificações SES com tipo de violência marcado como 'Sim' para esses filtros.")
+        return st.info("Não há notificações SES com tipo de violência marcado como 'Sim' para esse período e local.")
 
     fig, ax = plt.subplots(figsize=(10, 4))
     barras = ax.bar(df["tipo"], df["total"], color=["#4472C4", "#ED7D31", "#A64D79", "#70AD47"])
     _rotular_barras(ax, barras)
     ax.set_ylabel("Notificações SES com o tipo marcado como 'Sim'")
-    ax.set_title(f"Tipos de violência registrados pela SES — {ano}")
+    periodo = "todo o histórico" if ano is None else str(ano)
+    ax.set_title(f"Tipos de violência registrados pela SES — {periodo}")
     ax.grid(axis="y", linestyle="--", alpha=0.3)
     _exibir_grafico(fig, ax)
     st.caption("Uma notificação pode marcar mais de um tipo; as barras podem se sobrepor e não devem ser somadas.")
 
 
-def gerar_grafico_natureza_crime_pc(filtro, ano):
+def gerar_grafico_natureza_crime_pc(filtro, ano=None):
     query = """
         SELECT COALESCE(NULLIF(TRIM(natureza_delito), ''), 'Não informado') AS categoria,
                SUM(CAST(REPLACE(qtde_vitimas, ',', '.') AS REAL)) AS total
         FROM violenciaPc
-        WHERE 1=1 AND CAST(ano AS INTEGER) = ?
+        WHERE 1=1 {condicao_ano}
         GROUP BY categoria
         ORDER BY total DESC
         LIMIT 15
     """
+    condicao_ano = "" if ano is None else "AND CAST(ano AS INTEGER) = ?"
+    query = query.format(condicao_ano=condicao_ano)
     query, params_local = aplicar_filtro(query, "violenciaPc", filtro)
     with sqlite3.connect("database.db") as conexao:
-        df = pd.read_sql_query(query, conexao, params=(ano, *params_local))
+        parametros = (*params_local, *((ano,) if ano is not None else ()))
+        df = pd.read_sql_query(query, conexao, params=parametros)
     if df.empty:
-        return st.info("Não há vítimas registradas pela Polícia Civil para esse ano e local.")
+        return st.info("Não há vítimas registradas pela Polícia Civil para esse período e local.")
 
     df = df.sort_values("total", ascending=True)
     fig, ax = plt.subplots(figsize=(11, max(5, len(df) * 0.36)))
@@ -228,7 +236,8 @@ def gerar_grafico_natureza_crime_pc(filtro, ano):
     _rotular_barras(ax, barras, horizontal=True, formato="%.0f")
     ax.set_xlabel("Vítimas registradas pela Polícia Civil")
     ax.set_ylabel("Natureza do crime")
-    ax.set_title(f"Principais naturezas de crime registradas pela PC — {ano}")
+    periodo = "todo o histórico" if ano is None else str(ano)
+    ax.set_title(f"Principais naturezas de crime registradas pela PC — {periodo}")
     ax.grid(axis="x", linestyle="--", alpha=0.3)
     _exibir_grafico(fig, ax)
 
@@ -347,7 +356,7 @@ def gerar_grafico_anual_tabela(nome_tabela: str, cidade: str):
     _exibir_grafico(fig, ax)
     conexao.close()
 
-def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str):
+def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str, ano=None):
     conexao = sqlite3.connect("database.db")
     if nome_tabela == "feminicidio":
         query = """
@@ -379,9 +388,16 @@ def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str):
         conexao.close()
         return
 
+    if ano is not None:
+        if nome_tabela == "violenciaSES":
+            condicao_ano = "CAST(CASE WHEN substr(trim(DT_NOTIFIC),1,4) GLOB '[0-9][0-9][0-9][0-9]' THEN substr(trim(DT_NOTIFIC),1,4) ELSE substr(trim(DT_NOTIFIC),-4) END AS INTEGER) = ?"
+        else:
+            condicao_ano = "CAST(ano AS INTEGER) = ?"
+        query = query.replace("GROUP BY", f"AND {condicao_ano} GROUP BY", 1)
+
     # Normaliza cidade para tabelas que precisam
     query, params = aplicar_filtro(query, nome_tabela, cidade)
-    df = pd.read_sql_query(query, conexao, params=params)
+    df = pd.read_sql_query(query, conexao, params=(*params, *((ano,) if ano is not None else ())))
     df = normalizar_periodo(df, "mes", 1, 12)
     if df.empty:
         conexao.close()
@@ -395,7 +411,8 @@ def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str):
     ax.set_xlabel("Meses")
     ax.set_ylabel("Número de Crimes")
 
-    ax.set_title(f"Gráfico Mensal - Crimes contra a mulher em {cidade} - {titulos.get(nome_tabela)}")
+    periodo = f"{ano}" if ano is not None else "todo o histórico"
+    ax.set_title(f"Distribuição mensal — {titulos.get(nome_tabela)} em {cidade or 'Minas Gerais'} ({periodo})")
     ax.set_xticks(df["mes_nome"])  
     ax.grid(True, linestyle='--', alpha=0.5)
     _exibir_grafico(fig, ax)
@@ -458,7 +475,7 @@ def gerar_grafico_geral_anual(cidade: str):
     conexao.close()
 
 
-def gerar_grafico_geral_mensal(cidade: str):
+def gerar_grafico_geral_mensal(cidade: str, ano=None):
     conexao = sqlite3.connect("database.db")
     consultas = {
         "feminicidio": """
@@ -488,8 +505,15 @@ def gerar_grafico_geral_mensal(cidade: str):
     total_geral = {}
 
     for tabela, query in consultas.items():
+        if ano is not None:
+            if tabela == "violenciaSES":
+                condicao_ano = "CAST(CASE WHEN substr(trim(DT_NOTIFIC),1,4) GLOB '[0-9][0-9][0-9][0-9]' THEN substr(trim(DT_NOTIFIC),1,4) ELSE substr(trim(DT_NOTIFIC),-4) END AS INTEGER) = ?"
+            else:
+                condicao_ano = "CAST(ano AS INTEGER) = ?"
+            query = query.replace("GROUP BY", f"AND {condicao_ano} GROUP BY", 1)
         query, params = aplicar_filtro(query, tabela, cidade)
-        df = pd.read_sql_query(query, conexao, params=params)
+        parametros = (*params, *((ano,) if ano is not None else ()))
+        df = pd.read_sql_query(query, conexao, params=parametros)
         df = normalizar_periodo(df, "mes", 1, 12)
 
         for _, row in df.iterrows():
@@ -509,7 +533,8 @@ def gerar_grafico_geral_mensal(cidade: str):
     ax.plot(df_geral["mes_nome"], df_geral["total"], marker='o', linestyle='-', color='salmon')
     ax.set_xlabel("Meses")
     ax.set_ylabel("Número Total de Crimes")
-    ax.set_title(f"Gráfico Mensal - Total de crimes contra a mulher em {cidade} (todas as tabelas)")
+    periodo = f"{ano}" if ano is not None else "todo o histórico"
+    ax.set_title(f"Distribuição mensal — total das fontes em {cidade or 'Minas Gerais'} ({periodo})")
     ax.set_xticks(df_geral["mes_nome"])
     ax.grid(True, linestyle='--', alpha=0.5)
     _exibir_grafico(fig, ax)

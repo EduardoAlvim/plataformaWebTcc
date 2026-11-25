@@ -51,11 +51,17 @@ def consultar_dados(filtro, ano):
     def buscar_casos(tabela):
         if tabela == "violenciaSES":
             ano_expr = "CASE WHEN substr(trim(DT_NOTIFIC),1,4) GLOB '[0-9][0-9][0-9][0-9]' THEN substr(trim(DT_NOTIFIC),1,4) ELSE substr(trim(DT_NOTIFIC),-4) END"
-            where = f"CAST({ano_expr} AS INTEGER) = ?"
-            parametros = [ano]
+            where = "1=1"
+            parametros = []
+            if ano is not None:
+                where += f" AND CAST({ano_expr} AS INTEGER) = ?"
+                parametros.append(ano)
         else:
-            where = "CAST(ano AS INTEGER) = ?"
-            parametros = [ano]
+            where = "1=1"
+            parametros = []
+            if ano is not None:
+                where += " AND CAST(ano AS INTEGER) = ?"
+                parametros.append(ano)
 
         if filtro in {"Interior de MG", "RMBH", "Belo Horizonte"}:
             if tabela == "violenciaSES":
@@ -75,7 +81,7 @@ def consultar_dados(filtro, ano):
 
         resultado = cursor.fetchone()
         valor = resultado[0] if resultado else 0
-        return valor if valor > 0 else "Sem registros neste ano"
+        return valor if valor > 0 else ("Sem registros no período" if ano is None else "Sem registros neste ano")
 
     dados = {
         "Violência SES": buscar_casos("violenciaSES"),
@@ -85,6 +91,25 @@ def consultar_dados(filtro, ano):
 
     conn.close()
     return dados
+
+
+@st.cache_data
+def consultar_anos_disponiveis():
+    with sqlite3.connect("database.db") as conn:
+        consulta = """
+            SELECT CAST(ano AS INTEGER) AS ano FROM violenciaPc
+            UNION SELECT CAST(ano AS INTEGER) FROM feminicidio
+            UNION SELECT CAST(CASE
+                WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                    THEN substr(trim(DT_NOTIFIC), 1, 4)
+                ELSE substr(trim(DT_NOTIFIC), -4)
+            END AS INTEGER) FROM violenciaSES
+        """
+        return [
+            row[0] for row in conn.execute(
+                f"SELECT DISTINCT ano FROM ({consulta}) WHERE ano BETWEEN 1900 AND 2100 ORDER BY ano DESC"
+            )
+        ]
 
 
 def consultar_indicadores_ibge(filtro, ano):
@@ -152,22 +177,6 @@ def consultar_indicadores_ibge(filtro, ano):
     }
 
 
-def opcoes_filtro_ses(coluna):
-    colunas_permitidas = {"ORIENT_SEX", "IDENT_GEN", "CS_RACA"}
-    if coluna not in colunas_permitidas:
-        raise ValueError("Campo demográfico SES inválido")
-    with sqlite3.connect("database.db") as conn:
-        valores = conn.execute(
-            f"SELECT DISTINCT TRIM(COALESCE({coluna}, '')) FROM violenciaSES ORDER BY 1"
-        ).fetchall()
-    opcoes = {"Todos": None}
-    for (valor,) in valores:
-        rotulo = "Não informado (campo vazio)" if not valor else valor
-        opcoes[rotulo] = valor
-    return opcoes
-
-
-
 def normalizar_cidade(nome):
     """
     Remove acentos e transforma em letras maiúsculas.
@@ -181,11 +190,12 @@ def normalizar_cidade(nome):
 
 def mostrar_dados_resumo(cidade, ano, dados):
     nome_exibicao = "Minas Gerais" if not cidade.strip() else cidade
+    periodo = "todo o histórico disponível" if ano is None else f"ano de {ano}"
 
     st.markdown(f"""
         <div style="background-color:#f0f8ff;padding:20px;border-radius:10px;margin-bottom:20px">
             <h2 style="color:#004080;margin-bottom:5px;">{nome_exibicao}</h2>
-            <small style="color:gray;">Dados do ano de {ano}</small>
+            <small style="color:gray;">Dados de {periodo}</small>
         </div>
     """, unsafe_allow_html=True)
 
@@ -267,9 +277,12 @@ if cidade:
         st.warning("⚠️ Cidade não encontrada no arquivo GeoJSON.")
 
 # Sempre mostra seleção e mapa, mesmo que nenhuma cidade seja escolhida
-ano = st.selectbox("Selecione o ano:", list(range(2010, 2027)))
+anos_disponiveis = consultar_anos_disponiveis()
+opcoes_periodo = ["Todo o histórico", *anos_disponiveis]
+periodo_selecionado = st.selectbox("Período de análise:", opcoes_periodo)
+ano = None if periodo_selecionado == "Todo o histórico" else int(periodo_selecionado)
 
-if ano is not None:
+with st.container():
     dados = consultar_dados(filtro, ano)
 
     col_mapa, col_dados = st.columns([0.5, 0.5])
@@ -282,7 +295,9 @@ if ano is not None:
         if not filtro:
             st.info("Exibindo os dados gerais do estado de Minas Gerais.")
 
-    indicadores = consultar_indicadores_ibge(filtro, ano)
+    indicadores = consultar_indicadores_ibge(filtro, ano) if ano is not None else {}
+    if ano is None:
+        st.info("O perfil do IBGE exige um ano de referência. Selecione um ano para consultar esses indicadores.")
     if indicadores:
         def formatar_numero(valor, casas=0):
             if valor is None:
@@ -325,63 +340,43 @@ if ano is not None:
             st.markdown("### Relação exploratória entre escolaridade e violência (2022)")
             gerar_grafico_relacao_escolaridade_violencia(filtro)
 
-    st.markdown("---")
-    st.subheader(f"Filtros demográficos e tipos de violência — {ano}")
-    st.warning(
-        "Orientação sexual, identidade de gênero e raça/cor existem somente na base da SES. "
-        "As bases da Polícia Civil e de feminicídio não têm esses campos. Os filtros abaixo "
-        "afetam somente os dois gráficos de detalhamento SES desta seção; os indicadores de "
-        "resumo e os gráficos históricos permanecem sem esse recorte. O gráfico de natureza "
-        "da PC usa somente o ano e a área selecionada."
-    )
+    tabs = st.tabs(["Detalhamento SES", "Natureza dos crimes — PC", "Evolução temporal"])
+    with tabs[0]:
+        dimensao_grafico = st.selectbox(
+            "Distribuir notificações SES por:",
+            ["Orientação sexual", "Identidade de gênero", "Raça/cor"],
+            key="ses_dimensao_grafico",
+        )
+        gerar_grafico_demografico_ses(filtro, ano, dimensao_grafico)
+        gerar_grafico_tipos_violencia_ses(filtro, ano)
 
-    opcoes_orientacao = opcoes_filtro_ses("ORIENT_SEX")
-    opcoes_identidade = opcoes_filtro_ses("IDENT_GEN")
-    opcoes_raca = opcoes_filtro_ses("CS_RACA")
-    coluna_filtros = st.columns(3)
-    orientacao_selecionada = coluna_filtros[0].selectbox(
-        "Orientação sexual (SES)", list(opcoes_orientacao), key="ses_orientacao"
-    )
-    identidade_selecionada = coluna_filtros[1].selectbox(
-        "Identidade de gênero (SES)", list(opcoes_identidade), key="ses_identidade"
-    )
-    raca_selecionada = coluna_filtros[2].selectbox(
-        "Raça/cor (SES)", list(opcoes_raca), key="ses_raca"
-    )
-    orientacao = opcoes_orientacao[orientacao_selecionada]
-    identidade = opcoes_identidade[identidade_selecionada]
-    raca = opcoes_raca[raca_selecionada]
+    with tabs[1]:
+        st.caption("Natureza do delito e total de vítimas registrados pela Polícia Civil.")
+        gerar_grafico_natureza_crime_pc(filtro, ano)
 
-    dimensao_grafico = st.selectbox(
-        "Distribuir notificações SES por:",
-        ["Orientação sexual", "Identidade de gênero", "Raça/cor"],
-        key="ses_dimensao_grafico",
-    )
-    gerar_grafico_demografico_ses(
-        filtro, ano, dimensao_grafico, orientacao, identidade, raca
-    )
-    gerar_grafico_tipos_violencia_ses(
-        filtro, ano, orientacao, identidade, raca
-    )
+    with tabs[2]:
+        if ano is None:
+            st.markdown("#### Casos ao longo dos anos")
+            st.markdown("**Violência SES**")
+            gerar_grafico_anual_tabela("violenciaSES", filtro)
+            st.markdown("**Violência PC**")
+            gerar_grafico_anual_tabela("violenciaPc", filtro)
+            st.markdown("**Feminicídio**")
+            gerar_grafico_anual_tabela("feminicidio", filtro)
+            st.markdown("**Total das fontes ao longo dos anos**")
+            gerar_grafico_geral_anual(filtro)
 
-    st.markdown("#### Natureza do crime — Polícia Civil")
-    gerar_grafico_natureza_crime_pc(filtro, ano)
-
-    st.markdown("---")
-    st.markdown("### 📊 Evolução dos Casos por Tipo")
-    st.markdown("#### 🔵 Violência SES")
-    gerar_grafico_anual_tabela("violenciaSES", filtro)
-    gerar_grafico_mensal_tabela("violenciaSES", filtro)
-    st.markdown("#### 🟠 Violência PC")
-    gerar_grafico_anual_tabela("violenciaPc", filtro)
-    gerar_grafico_mensal_tabela("violenciaPc", filtro)
-    st.markdown("#### 🔴 Feminicídio")
-    gerar_grafico_anual_tabela("feminicidio", filtro)
-    gerar_grafico_mensal_tabela("feminicidio", filtro)
-    st.markdown("---")
-    st.markdown("### 📈 Panorama Geral de Casos (Todas as Fontes)")
-    gerar_grafico_geral_anual(filtro)
-    gerar_grafico_geral_mensal(filtro)
+            st.markdown("#### Distribuição mensal em todo o histórico")
+            gerar_grafico_mensal_tabela("violenciaSES", filtro)
+            gerar_grafico_mensal_tabela("violenciaPc", filtro)
+            gerar_grafico_mensal_tabela("feminicidio", filtro)
+            gerar_grafico_geral_mensal(filtro)
+        else:
+            st.markdown(f"#### Distribuição mensal de {ano}")
+            gerar_grafico_mensal_tabela("violenciaSES", filtro, ano=ano)
+            gerar_grafico_mensal_tabela("violenciaPc", filtro, ano=ano)
+            gerar_grafico_mensal_tabela("feminicidio", filtro, ano=ano)
+            gerar_grafico_geral_mensal(filtro, ano=ano)
 
 
 
