@@ -23,27 +23,78 @@ def normalizar_cidade(nome):
     return nome.upper()
 
 
+def normalizar_periodo(df, coluna, minimo, maximo):
+    """Converte período numérico e descarta datas vazias ou malformadas."""
+    valores = pd.to_numeric(df[coluna], errors="coerce")
+    validos = valores.notna() & valores.between(minimo, maximo)
+    df = df.loc[validos].copy()
+    df[coluna] = valores.loc[validos].astype(int)
+    return df
+
+
+REGIOES = {"Interior de MG", "RMBH", "Belo Horizonte"}
+
+
+def aplicar_filtro(query, tabela, filtro):
+    if not filtro:
+        return query, ()
+
+    if filtro in REGIOES:
+        if tabela == "violenciaSES":
+            condicao = (
+                "ID_MN_RESI IN (SELECT municipio_ses FROM dimensao_municipio "
+                "WHERE classificacao = ? AND municipio_ses IS NOT NULL)"
+            )
+        else:
+            condicao = (
+                "municipio_cod IN (SELECT municipio_cod FROM dimensao_municipio "
+                "WHERE classificacao = ?)"
+            )
+        parametro = filtro
+    elif tabela == "violenciaSES":
+        condicao, parametro = "ID_MN_RESI = ?", filtro
+    else:
+        condicao = (
+            "municipio_cod IN (SELECT municipio_cod FROM dimensao_municipio "
+            "WHERE REPLACE(REPLACE(municipio_nome, '-', ''), ' ', '') = "
+            "REPLACE(REPLACE(?, '-', ''), ' ', ''))"
+        )
+        parametro = normalizar_cidade(filtro)
+
+    if "WHERE 1=1" in query:
+        query = query.replace("WHERE 1=1", f"WHERE 1=1 AND {condicao}", 1)
+    elif "GROUP BY" in query:
+        query = query.replace("GROUP BY", f"WHERE {condicao} GROUP BY", 1)
+    else:
+        query += f" WHERE {condicao}"
+    return query, (parametro,)
+
+
 def gerar_grafico_anual_tabela(nome_tabela: str, cidade: str):
     conexao = sqlite3.connect("database.db")
     if nome_tabela == "feminicidio":
         query = """
             SELECT ano, COUNT(*) as total
             FROM feminicidio
-            WHERE municipio_fato = ?
+            WHERE 1=1
             GROUP BY ano
         """
     elif nome_tabela == "violenciaPc":
         query = """
             SELECT ano, COUNT(*) as total
             FROM violenciaPc
-            WHERE municipio_fato = ?
+            WHERE 1=1
             GROUP BY ano
         """
     elif nome_tabela == "violenciaSES":
         query = """
-            SELECT substr(DT_NOTIFIC, -4) as ano, COUNT(*) as total
+            SELECT CASE
+                WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                    THEN substr(trim(DT_NOTIFIC), 1, 4)
+                ELSE substr(trim(DT_NOTIFIC), -4)
+            END as ano, COUNT(*) as total
             FROM violenciaSES
-            WHERE ID_MN_RESI = ?
+            WHERE 1=1
             GROUP BY ano
         """
     else:
@@ -52,10 +103,9 @@ def gerar_grafico_anual_tabela(nome_tabela: str, cidade: str):
         return
 
     # Normaliza cidade para tabelas que precisam
-    cidade_param = cidade if nome_tabela == "violenciaSES" else normalizar_cidade(cidade)
-
-    df = pd.read_sql_query(query, conexao, params=(cidade_param,))
-    df["ano"] = df["ano"].astype(int)
+    query, params = aplicar_filtro(query, nome_tabela, cidade)
+    df = pd.read_sql_query(query, conexao, params=params)
+    df = normalizar_periodo(df, "ano", 1900, 2100)
     if df.empty:
         conexao.close()
         return st.write(f"Não há registros na tabela '{titulos.get(nome_tabela)}' para a cidade '{cidade}'.")
@@ -80,21 +130,25 @@ def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str):
         query = """
             SELECT mes, COUNT(*) as total
             FROM feminicidio
-            WHERE municipio_fato = ?
+            WHERE 1=1
             GROUP BY mes
         """
     elif nome_tabela == "violenciaPc":
         query = """
             SELECT mes, COUNT(*) as total
             FROM violenciaPc
-            WHERE municipio_fato = ?
+            WHERE 1=1
             GROUP BY mes
         """
     elif nome_tabela == "violenciaSES":
         query = """
-            SELECT substr(DT_NOTIFIC, 4, 2) as mes, COUNT(*) as total
+            SELECT CASE
+                WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                    THEN substr(trim(DT_NOTIFIC), 6, 2)
+                ELSE substr(trim(DT_NOTIFIC), 4, 2)
+            END as mes, COUNT(*) as total
             FROM violenciaSES
-            WHERE ID_MN_RESI = ?
+            WHERE 1=1
             GROUP BY mes
         """
     else:
@@ -103,10 +157,9 @@ def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str):
         return
 
     # Normaliza cidade para tabelas que precisam
-    cidade_param = cidade if nome_tabela == "violenciaSES" else normalizar_cidade(cidade)
-
-    df = pd.read_sql_query(query, conexao, params=(cidade_param,))
-    df["mes"] = df["mes"].astype(int)
+    query, params = aplicar_filtro(query, nome_tabela, cidade)
+    df = pd.read_sql_query(query, conexao, params=params)
+    df = normalizar_periodo(df, "mes", 1, 12)
     if df.empty:
         conexao.close()
         return st.write(f"Não há registros na tabela '{titulos.get(nome_tabela)}' para a cidade '{cidade}'.")
@@ -132,19 +185,23 @@ def gerar_grafico_geral_anual(cidade: str):
         "feminicidio": """
             SELECT ano, COUNT(*) as total
             FROM feminicidio
-            WHERE municipio_fato = ?
+            WHERE 1=1
             GROUP BY ano
         """,
         "violenciaPc": """
             SELECT ano, COUNT(*) as total
             FROM violenciaPc
-            WHERE municipio_fato = ?
+            WHERE 1=1
             GROUP BY ano
         """,
         "violenciaSES": """
-            SELECT substr(DT_NOTIFIC, -4) as ano, COUNT(*) as total
+            SELECT CASE
+                WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                    THEN substr(trim(DT_NOTIFIC), 1, 4)
+                ELSE substr(trim(DT_NOTIFIC), -4)
+            END as ano, COUNT(*) as total
             FROM violenciaSES
-            WHERE ID_MN_RESI = ?
+            WHERE 1=1
             GROUP BY ano
         """
     }
@@ -152,9 +209,9 @@ def gerar_grafico_geral_anual(cidade: str):
     total_geral = {}
 
     for tabela, query in consultas.items():
-        cidade_param = cidade if tabela == "violenciaSES" else normalizar_cidade(cidade)
-        df = pd.read_sql_query(query, conexao, params=(cidade_param,))
-        df["ano"] = df["ano"].astype(int)
+        query, params = aplicar_filtro(query, tabela, cidade)
+        df = pd.read_sql_query(query, conexao, params=params)
+        df = normalizar_periodo(df, "ano", 1900, 2100)
 
         for _, row in df.iterrows():
             ano = int(row["ano"])
@@ -186,19 +243,23 @@ def gerar_grafico_geral_mensal(cidade: str):
         "feminicidio": """
             SELECT mes, COUNT(*) as total
             FROM feminicidio
-            WHERE municipio_fato = ?
+            WHERE 1=1
             GROUP BY mes
         """,
         "violenciaPc": """
             SELECT mes, COUNT(*) as total
             FROM violenciaPc
-            WHERE municipio_fato = ?
+            WHERE 1=1
             GROUP BY mes
         """,
         "violenciaSES": """
-            SELECT substr(DT_NOTIFIC, 4, 2) as mes, COUNT(*) as total
+            SELECT CASE
+                WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                    THEN substr(trim(DT_NOTIFIC), 6, 2)
+                ELSE substr(trim(DT_NOTIFIC), 4, 2)
+            END as mes, COUNT(*) as total
             FROM violenciaSES
-            WHERE ID_MN_RESI = ?
+            WHERE 1=1
             GROUP BY mes
         """
     }
@@ -206,9 +267,9 @@ def gerar_grafico_geral_mensal(cidade: str):
     total_geral = {}
 
     for tabela, query in consultas.items():
-        cidade_param = cidade if tabela == "violenciaSES" else normalizar_cidade(cidade)
-        df = pd.read_sql_query(query, conexao, params=(cidade_param,))
-        df["mes"] = df["mes"].astype(int)
+        query, params = aplicar_filtro(query, tabela, cidade)
+        df = pd.read_sql_query(query, conexao, params=params)
+        df = normalizar_periodo(df, "mes", 1, 12)
 
         for _, row in df.iterrows():
             mes = int(row["mes"])
@@ -250,7 +311,11 @@ def gerar_grafico_anual_tabela_mg(nome_tabela: str):
         """
     elif nome_tabela == "violenciaSES":
         query = """
-            SELECT substr(DT_NOTIFIC, -4) as ano, COUNT(*) as total
+            SELECT CASE
+                WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                    THEN substr(trim(DT_NOTIFIC), 1, 4)
+                ELSE substr(trim(DT_NOTIFIC), -4)
+            END as ano, COUNT(*) as total
             FROM violenciaSES
             GROUP BY ano
         """
@@ -259,8 +324,9 @@ def gerar_grafico_anual_tabela_mg(nome_tabela: str):
         conexao.close()
         return
 
-    df = pd.read_sql_query(query, conexao)
-    df["ano"] = df["ano"].astype(int)
+    query, params = aplicar_filtro(query, nome_tabela, "")
+    df = pd.read_sql_query(query, conexao, params=params)
+    df = normalizar_periodo(df, "ano", 1900, 2100)
     if df.empty:
         conexao.close()
         return st.write(f"Não há registros na tabela '{titulos.get(nome_tabela)}' para o estado de Minas Gerais")
@@ -295,7 +361,11 @@ def gerar_grafico_mensal_tabela_mg(nome_tabela: str):
         """
     elif nome_tabela == "violenciaSES":
         query = """
-            SELECT substr(DT_NOTIFIC, 4, 2) as mes, COUNT(*) as total
+            SELECT CASE
+                WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                    THEN substr(trim(DT_NOTIFIC), 6, 2)
+                ELSE substr(trim(DT_NOTIFIC), 4, 2)
+            END as mes, COUNT(*) as total
             FROM violenciaSES
             GROUP BY mes
         """
@@ -304,8 +374,9 @@ def gerar_grafico_mensal_tabela_mg(nome_tabela: str):
         conexao.close()
         return
 
-    df = pd.read_sql_query(query, conexao)
-    df["mes"] = df["mes"].astype(int)
+    query, params = aplicar_filtro(query, nome_tabela, "")
+    df = pd.read_sql_query(query, conexao, params=params)
+    df = normalizar_periodo(df, "mes", 1, 12)
     if df.empty:
         conexao.close()
         return st.write(f"Não há registros na tabela '{titulos.get(nome_tabela)}' para o estado de Minas Gerais")
@@ -339,7 +410,11 @@ def gerar_grafico_geral_anual_mg():
             GROUP BY ano
         """,
         "violenciaSES": """
-            SELECT substr(DT_NOTIFIC, -4) as ano, COUNT(*) as total
+            SELECT CASE
+                WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                    THEN substr(trim(DT_NOTIFIC), 1, 4)
+                ELSE substr(trim(DT_NOTIFIC), -4)
+            END as ano, COUNT(*) as total
             FROM violenciaSES
             GROUP BY ano
         """
@@ -348,8 +423,9 @@ def gerar_grafico_geral_anual_mg():
     total_geral = {}
 
     for tabela, query in consultas.items():
-        df = pd.read_sql_query(query, conexao)
-        df["ano"] = df["ano"].astype(int)
+        query, params = aplicar_filtro(query, tabela, "")
+        df = pd.read_sql_query(query, conexao, params=params)
+        df = normalizar_periodo(df, "ano", 1900, 2100)
 
         for _, row in df.iterrows():
             ano = int(row["ano"])
@@ -388,7 +464,11 @@ def gerar_grafico_geral_mensal_mg():
             GROUP BY mes
         """,
         "violenciaSES": """
-            SELECT substr(DT_NOTIFIC, 4, 2) as mes, COUNT(*) as total
+            SELECT CASE
+                WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+                    THEN substr(trim(DT_NOTIFIC), 6, 2)
+                ELSE substr(trim(DT_NOTIFIC), 4, 2)
+            END as mes, COUNT(*) as total
             FROM violenciaSES
             GROUP BY mes
         """
@@ -397,8 +477,9 @@ def gerar_grafico_geral_mensal_mg():
     total_geral = {}
 
     for tabela, query in consultas.items():
-        df = pd.read_sql_query(query, conexao)
-        df["mes"] = df["mes"].astype(int)
+        query, params = aplicar_filtro(query, tabela, "")
+        df = pd.read_sql_query(query, conexao, params=params)
+        df = normalizar_periodo(df, "mes", 1, 12)
 
         for _, row in df.iterrows():
             mes = int(row["mes"])
