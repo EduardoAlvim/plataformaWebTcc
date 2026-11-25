@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import unicodedata
 import streamlit as st
 import numpy as np
+import textwrap
+from matplotlib.ticker import MaxNLocator
 
 titulos = {
         "feminicidio": "Feminicídio (Polícia Civil)",
@@ -31,6 +33,39 @@ def normalizar_periodo(df, coluna, minimo, maximo):
     df = df.loc[validos].copy()
     df[coluna] = valores.loc[validos].astype(int)
     return df
+
+
+def _exibir_grafico(fig, ax):
+    """Ajusta margens e rótulos dos eixos antes de exibir qualquer gráfico."""
+    rotulos_y = [rotulo.get_text() for rotulo in ax.get_yticklabels()]
+    if rotulos_y and len(rotulos_y) <= 30:
+        rotulos_quebrados = [
+            textwrap.fill(rotulo, width=28, break_long_words=True)
+            for rotulo in rotulos_y
+        ]
+        if rotulos_quebrados != rotulos_y:
+            ax.set_yticks(ax.get_yticks(), labels=rotulos_quebrados)
+            linhas_rotulos = sum(rotulo.count("\n") + 1 for rotulo in rotulos_quebrados)
+            fig.set_figheight(max(fig.get_figheight(), linhas_rotulos * 0.34 + 1.2))
+
+    if ax.get_xlabel() == "Ano":
+        ax.xaxis.set_major_locator(MaxNLocator(nbins=10, integer=True))
+    fig.tight_layout(pad=1.3)
+    st.pyplot(fig)
+    plt.close(fig)
+
+
+def _rotular_barras(ax, barras, horizontal=False, formato="%d"):
+    """Posiciona os valores fora das barras e reserva espaço para eles."""
+    ax.bar_label(barras, fmt=formato, padding=4)
+    valores = [barra.get_width() if horizontal else barra.get_height() for barra in barras]
+    maior = max(valores, default=0)
+    if maior > 0:
+        limite = maior * 1.25
+        if horizontal:
+            ax.set_xlim(left=0, right=limite)
+        else:
+            ax.set_ylim(bottom=0, top=limite)
 
 
 REGIOES = {"Interior de MG", "RMBH", "Belo Horizonte"}
@@ -131,13 +166,12 @@ def gerar_grafico_demografico_ses(
     df = df.sort_values("total", ascending=True)
     fig, ax = plt.subplots(figsize=(10, max(4, len(df) * 0.38)))
     barras = ax.barh(df["categoria"], df["total"], color="teal")
-    ax.bar_label(barras, fmt="%d", padding=3)
+    _rotular_barras(ax, barras, horizontal=True)
     ax.set_xlabel("Notificações SES")
     ax.set_ylabel(dimensao)
     ax.set_title(f"Notificações SES por {dimensao.lower()} — {ano}")
     ax.grid(axis="x", linestyle="--", alpha=0.3)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
 
 
 def gerar_grafico_tipos_violencia_ses(
@@ -164,12 +198,11 @@ def gerar_grafico_tipos_violencia_ses(
 
     fig, ax = plt.subplots(figsize=(10, 4))
     barras = ax.bar(df["tipo"], df["total"], color=["#4472C4", "#ED7D31", "#A64D79", "#70AD47"])
-    ax.bar_label(barras, fmt="%d", padding=3)
+    _rotular_barras(ax, barras)
     ax.set_ylabel("Notificações SES com o tipo marcado como 'Sim'")
     ax.set_title(f"Tipos de violência registrados pela SES — {ano}")
     ax.grid(axis="y", linestyle="--", alpha=0.3)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     st.caption("Uma notificação pode marcar mais de um tipo; as barras podem se sobrepor e não devem ser somadas.")
 
 
@@ -192,13 +225,12 @@ def gerar_grafico_natureza_crime_pc(filtro, ano):
     df = df.sort_values("total", ascending=True)
     fig, ax = plt.subplots(figsize=(11, max(5, len(df) * 0.36)))
     barras = ax.barh(df["categoria"], df["total"], color="slateblue")
-    ax.bar_label(barras, fmt="%.0f", padding=3)
+    _rotular_barras(ax, barras, horizontal=True, formato="%.0f")
     ax.set_xlabel("Vítimas registradas pela Polícia Civil")
     ax.set_ylabel("Natureza do crime")
     ax.set_title(f"Principais naturezas de crime registradas pela PC — {ano}")
     ax.grid(axis="x", linestyle="--", alpha=0.3)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
 
 
 def gerar_grafico_relacao_escolaridade_violencia(filtro=""):
@@ -248,8 +280,7 @@ def gerar_grafico_relacao_escolaridade_violencia(filtro=""):
     local = filtro or "Minas Gerais"
     ax.set_title(f"Escolaridade e violência registrada em {local}")
     ax.grid(True, linestyle="--", alpha=0.35)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     # Spearman equivale à correlação de Pearson entre os postos. Calcular assim
     # evita a dependência opcional de scipy, que pandas importa internamente.
     correlacao = (
@@ -313,8 +344,7 @@ def gerar_grafico_anual_tabela(nome_tabela: str, cidade: str):
     ax.set_title(f"Gráfico Anual - Crimes contra a mulher em {cidade} - {titulos.get(nome_tabela)}")
     ax.set_xticks(df["ano"])  # Mostra todos os anos no eixo x
     ax.grid(True, linestyle='--', alpha=0.5)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     conexao.close()
 
 def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str):
@@ -368,8 +398,7 @@ def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str):
     ax.set_title(f"Gráfico Mensal - Crimes contra a mulher em {cidade} - {titulos.get(nome_tabela)}")
     ax.set_xticks(df["mes_nome"])  
     ax.grid(True, linestyle='--', alpha=0.5)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     conexao.close()
 
 def gerar_grafico_geral_anual(cidade: str):
@@ -425,8 +454,7 @@ def gerar_grafico_geral_anual(cidade: str):
     ax.set_title(f"Gráfico Anual - Total de crimes contra a mulher em {cidade} (todas as tabelas)")
     ax.set_xticks(df_geral["ano"])
     ax.grid(True, linestyle='--', alpha=0.5)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     conexao.close()
 
 
@@ -484,8 +512,7 @@ def gerar_grafico_geral_mensal(cidade: str):
     ax.set_title(f"Gráfico Mensal - Total de crimes contra a mulher em {cidade} (todas as tabelas)")
     ax.set_xticks(df_geral["mes_nome"])
     ax.grid(True, linestyle='--', alpha=0.5)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     conexao.close()
 
 def gerar_grafico_anual_tabela_mg(nome_tabela: str):
@@ -534,8 +561,7 @@ def gerar_grafico_anual_tabela_mg(nome_tabela: str):
     ax.set_title(f"Gráfico Anual - Crimes contra a mulher em Minas Gerais - {titulos.get(nome_tabela)}")
     ax.set_xticks(df["ano"])  # Mostra todos os anos no eixo x
     ax.grid(True, linestyle='--', alpha=0.5)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     conexao.close()
 
 def gerar_grafico_mensal_tabela_mg(nome_tabela: str):
@@ -585,8 +611,7 @@ def gerar_grafico_mensal_tabela_mg(nome_tabela: str):
     ax.set_title(f"Gráfico Mensal - Crimes contra a mulher em Minas Gerais - {titulos.get(nome_tabela)}")
     ax.set_xticks(df["mes_nome"])  
     ax.grid(True, linestyle='--', alpha=0.5)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     conexao.close()
 
 def gerar_grafico_geral_anual_mg():
@@ -639,8 +664,7 @@ def gerar_grafico_geral_anual_mg():
     ax.set_title(f"Gráfico Anual - Total de crimes contra a mulher em Minas Gerais (todas as tabelas)")
     ax.set_xticks(df_geral["ano"])
     ax.grid(True, linestyle='--', alpha=0.5)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     conexao.close()
 
 def gerar_grafico_geral_mensal_mg():
@@ -694,6 +718,5 @@ def gerar_grafico_geral_mensal_mg():
     ax.set_title(f"Gráfico Mensal - Total de crimes contra a mulher em Minas Gerais (todas as tabelas)")
     ax.set_xticks(df_geral["mes_nome"])
     ax.grid(True, linestyle='--', alpha=0.5)
-    fig.tight_layout()
-    st.pyplot(fig)
+    _exibir_grafico(fig, ax)
     conexao.close()
