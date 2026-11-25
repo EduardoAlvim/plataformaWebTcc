@@ -71,6 +71,136 @@ def aplicar_filtro(query, tabela, filtro):
     return query, (parametro,)
 
 
+def _condicoes_demograficas_ses(filtro, ano, orientacao, identidade, raca):
+    ano_notificacao = """CAST(CASE
+        WHEN substr(trim(DT_NOTIFIC), 1, 4) GLOB '[0-9][0-9][0-9][0-9]'
+            THEN substr(trim(DT_NOTIFIC), 1, 4)
+        ELSE substr(trim(DT_NOTIFIC), -4)
+    END AS INTEGER)"""
+    condicoes = [f"{ano_notificacao} = ?"]
+    parametros = [ano]
+
+    if filtro in REGIOES:
+        condicoes.append(
+            "ID_MN_RESI IN (SELECT municipio_ses FROM dimensao_municipio "
+            "WHERE classificacao = ? AND municipio_ses IS NOT NULL)"
+        )
+        parametros.append(filtro)
+    elif filtro:
+        condicoes.append("ID_MN_RESI = ?")
+        parametros.append(filtro)
+
+    for coluna, valor in (
+        ("ORIENT_SEX", orientacao),
+        ("IDENT_GEN", identidade),
+        ("CS_RACA", raca),
+    ):
+        if valor is not None:
+            condicoes.append(f"COALESCE(TRIM({coluna}), '') = ?")
+            parametros.append(valor)
+
+    return " AND ".join(condicoes), parametros
+
+
+def gerar_grafico_demografico_ses(
+    filtro, ano, dimensao, orientacao=None, identidade=None, raca=None
+):
+    colunas = {
+        "Orientação sexual": "ORIENT_SEX",
+        "Identidade de gênero": "IDENT_GEN",
+        "Raça/cor": "CS_RACA",
+    }
+    coluna = colunas[dimensao]
+    where, parametros = _condicoes_demograficas_ses(
+        filtro, ano, orientacao, identidade, raca
+    )
+    query = f"""
+        SELECT COALESCE(NULLIF(TRIM({coluna}), ''), 'Não informado') AS categoria,
+               COUNT(*) AS total
+        FROM violenciaSES
+        WHERE {where}
+        GROUP BY categoria
+        ORDER BY total DESC
+    """
+
+    with sqlite3.connect("database.db") as conexao:
+        df = pd.read_sql_query(query, conexao, params=parametros)
+    if df.empty:
+        return st.info("Não há notificações SES para essa combinação de ano, local e filtros.")
+
+    df = df.sort_values("total", ascending=True)
+    fig, ax = plt.subplots(figsize=(10, max(4, len(df) * 0.38)))
+    barras = ax.barh(df["categoria"], df["total"], color="teal")
+    ax.bar_label(barras, fmt="%d", padding=3)
+    ax.set_xlabel("Notificações SES")
+    ax.set_ylabel(dimensao)
+    ax.set_title(f"Notificações SES por {dimensao.lower()} — {ano}")
+    ax.grid(axis="x", linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    st.pyplot(fig)
+
+
+def gerar_grafico_tipos_violencia_ses(
+    filtro, ano, orientacao=None, identidade=None, raca=None
+):
+    where, parametros = _condicoes_demograficas_ses(
+        filtro, ano, orientacao, identidade, raca
+    )
+    consulta = """
+        SELECT
+            SUM(CASE WHEN UPPER(TRIM(VIOL_FISIC)) = 'SIM' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN UPPER(TRIM(VIOL_PSICO)) = 'SIM' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN UPPER(TRIM(VIOL_SEXU)) = 'SIM' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN UPPER(TRIM(LES_AUTOP)) = 'SIM' THEN 1 ELSE 0 END)
+        FROM violenciaSES
+        WHERE {where}
+    """.format(where=where)
+    with sqlite3.connect("database.db") as conexao:
+        valores = conexao.execute(consulta, parametros).fetchone()
+    categorias = ["Física", "Psicológica", "Sexual", "Lesão autoprovocada"]
+    df = pd.DataFrame({"tipo": categorias, "total": [valor or 0 for valor in valores]})
+    if not df["total"].sum():
+        return st.info("Não há notificações SES com tipo de violência marcado como 'Sim' para esses filtros.")
+
+    fig, ax = plt.subplots(figsize=(10, 4))
+    barras = ax.bar(df["tipo"], df["total"], color=["#4472C4", "#ED7D31", "#A64D79", "#70AD47"])
+    ax.bar_label(barras, fmt="%d", padding=3)
+    ax.set_ylabel("Notificações SES com o tipo marcado como 'Sim'")
+    ax.set_title(f"Tipos de violência registrados pela SES — {ano}")
+    ax.grid(axis="y", linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    st.pyplot(fig)
+    st.caption("Uma notificação pode marcar mais de um tipo; as barras podem se sobrepor e não devem ser somadas.")
+
+
+def gerar_grafico_natureza_crime_pc(filtro, ano):
+    query = """
+        SELECT COALESCE(NULLIF(TRIM(natureza_delito), ''), 'Não informado') AS categoria,
+               SUM(CAST(REPLACE(qtde_vitimas, ',', '.') AS REAL)) AS total
+        FROM violenciaPc
+        WHERE 1=1 AND CAST(ano AS INTEGER) = ?
+        GROUP BY categoria
+        ORDER BY total DESC
+        LIMIT 15
+    """
+    query, params_local = aplicar_filtro(query, "violenciaPc", filtro)
+    with sqlite3.connect("database.db") as conexao:
+        df = pd.read_sql_query(query, conexao, params=(ano, *params_local))
+    if df.empty:
+        return st.info("Não há vítimas registradas pela Polícia Civil para esse ano e local.")
+
+    df = df.sort_values("total", ascending=True)
+    fig, ax = plt.subplots(figsize=(11, max(5, len(df) * 0.36)))
+    barras = ax.barh(df["categoria"], df["total"], color="slateblue")
+    ax.bar_label(barras, fmt="%.0f", padding=3)
+    ax.set_xlabel("Vítimas registradas pela Polícia Civil")
+    ax.set_ylabel("Natureza do crime")
+    ax.set_title(f"Principais naturezas de crime registradas pela PC — {ano}")
+    ax.grid(axis="x", linestyle="--", alpha=0.3)
+    fig.tight_layout()
+    st.pyplot(fig)
+
+
 def gerar_grafico_relacao_escolaridade_violencia(filtro=""):
     """Mostra associação municipal exploratória para o ano comum de 2022."""
     if filtro and filtro not in REGIOES:

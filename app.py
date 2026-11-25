@@ -13,6 +13,9 @@ from gerarGraficos import (
     gerar_grafico_geral_mensal,
     gerar_grafico_mensal_tabela,
     gerar_grafico_relacao_escolaridade_violencia,
+    gerar_grafico_demografico_ses,
+    gerar_grafico_tipos_violencia_ses,
+    gerar_grafico_natureza_crime_pc,
 )
 
 
@@ -147,6 +150,21 @@ def consultar_indicadores_ibge(filtro, ano):
         "percentual_superior": percentual_superior,
         "percentual_escolaridade_baixa": percentual_escolaridade_baixa,
     }
+
+
+def opcoes_filtro_ses(coluna):
+    colunas_permitidas = {"ORIENT_SEX", "IDENT_GEN", "CS_RACA"}
+    if coluna not in colunas_permitidas:
+        raise ValueError("Campo demográfico SES inválido")
+    with sqlite3.connect("database.db") as conn:
+        valores = conn.execute(
+            f"SELECT DISTINCT TRIM(COALESCE({coluna}, '')) FROM violenciaSES ORDER BY 1"
+        ).fetchall()
+    opcoes = {"Todos": None}
+    for (valor,) in valores:
+        rotulo = "Não informado (campo vazio)" if not valor else valor
+        opcoes[rotulo] = valor
+    return opcoes
 
 
 
@@ -306,6 +324,48 @@ if ano is not None:
         if ano == 2022:
             st.markdown("### Relação exploratória entre escolaridade e violência (2022)")
             gerar_grafico_relacao_escolaridade_violencia(filtro)
+
+    st.markdown("---")
+    st.subheader(f"Filtros demográficos e tipos de violência — {ano}")
+    st.warning(
+        "Orientação sexual, identidade de gênero e raça/cor existem somente na base da SES. "
+        "As bases da Polícia Civil e de feminicídio não têm esses campos. Os filtros abaixo "
+        "afetam somente os dois gráficos de detalhamento SES desta seção; os indicadores de "
+        "resumo e os gráficos históricos permanecem sem esse recorte. O gráfico de natureza "
+        "da PC usa somente o ano e a área selecionada."
+    )
+
+    opcoes_orientacao = opcoes_filtro_ses("ORIENT_SEX")
+    opcoes_identidade = opcoes_filtro_ses("IDENT_GEN")
+    opcoes_raca = opcoes_filtro_ses("CS_RACA")
+    coluna_filtros = st.columns(3)
+    orientacao_selecionada = coluna_filtros[0].selectbox(
+        "Orientação sexual (SES)", list(opcoes_orientacao), key="ses_orientacao"
+    )
+    identidade_selecionada = coluna_filtros[1].selectbox(
+        "Identidade de gênero (SES)", list(opcoes_identidade), key="ses_identidade"
+    )
+    raca_selecionada = coluna_filtros[2].selectbox(
+        "Raça/cor (SES)", list(opcoes_raca), key="ses_raca"
+    )
+    orientacao = opcoes_orientacao[orientacao_selecionada]
+    identidade = opcoes_identidade[identidade_selecionada]
+    raca = opcoes_raca[raca_selecionada]
+
+    dimensao_grafico = st.selectbox(
+        "Distribuir notificações SES por:",
+        ["Orientação sexual", "Identidade de gênero", "Raça/cor"],
+        key="ses_dimensao_grafico",
+    )
+    gerar_grafico_demografico_ses(
+        filtro, ano, dimensao_grafico, orientacao, identidade, raca
+    )
+    gerar_grafico_tipos_violencia_ses(
+        filtro, ano, orientacao, identidade, raca
+    )
+
+    st.markdown("#### Natureza do crime — Polícia Civil")
+    gerar_grafico_natureza_crime_pc(filtro, ano)
 
     st.markdown("---")
     st.markdown("### 📊 Evolução dos Casos por Tipo")
