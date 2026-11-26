@@ -26,6 +26,15 @@ def normalizar_cidade(nome):
     return nome.upper()
 
 
+def nome_local_exibicao(nome):
+    nomes_regioes = {
+        "RMBH": "Região Metropolitana de Belo Horizonte",
+        "Interior de MG": "Interior de Minas Gerais",
+        "Belo Horizonte": "Belo Horizonte",
+    }
+    return nomes_regioes.get(nome, nome or "Minas Gerais")
+
+
 def normalizar_periodo(df, coluna, minimo, maximo):
     """Converte período numérico e descarta datas vazias ou malformadas."""
     valores = pd.to_numeric(df[coluna], errors="coerce")
@@ -76,17 +85,22 @@ def aplicar_filtro(query, tabela, filtro):
         return query, ()
 
     if filtro in REGIOES:
+        classificacao = (
+            "classificacao IN ('RMBH', 'Belo Horizonte')"
+            if filtro == "RMBH"
+            else "classificacao = ?"
+        )
         if tabela == "violenciaSES":
             condicao = (
                 "ID_MN_RESI IN (SELECT municipio_ses FROM dimensao_municipio "
-                "WHERE classificacao = ? AND municipio_ses IS NOT NULL)"
+                f"WHERE {classificacao} AND municipio_ses IS NOT NULL)"
             )
         else:
             condicao = (
                 "municipio_cod IN (SELECT municipio_cod FROM dimensao_municipio "
-                "WHERE classificacao = ?)"
+                f"WHERE {classificacao})"
             )
-        parametro = filtro
+        parametro = None if filtro == "RMBH" else filtro
     elif tabela == "violenciaSES":
         condicao, parametro = "ID_MN_RESI = ?", filtro
     else:
@@ -103,7 +117,7 @@ def aplicar_filtro(query, tabela, filtro):
         query = query.replace("GROUP BY", f"WHERE {condicao} GROUP BY", 1)
     else:
         query += f" WHERE {condicao}"
-    return query, (parametro,)
+    return query, () if parametro is None else (parametro,)
 
 
 def _condicoes_demograficas_ses(filtro, ano, orientacao, identidade, raca):
@@ -119,11 +133,18 @@ def _condicoes_demograficas_ses(filtro, ano, orientacao, identidade, raca):
         parametros.append(ano)
 
     if filtro in REGIOES:
-        condicoes.append(
-            "ID_MN_RESI IN (SELECT municipio_ses FROM dimensao_municipio "
-            "WHERE classificacao = ? AND municipio_ses IS NOT NULL)"
-        )
-        parametros.append(filtro)
+        if filtro == "RMBH":
+            condicoes.append(
+                "ID_MN_RESI IN (SELECT municipio_ses FROM dimensao_municipio "
+                "WHERE classificacao IN ('RMBH', 'Belo Horizonte') "
+                "AND municipio_ses IS NOT NULL)"
+            )
+        else:
+            condicoes.append(
+                "ID_MN_RESI IN (SELECT municipio_ses FROM dimensao_municipio "
+                "WHERE classificacao = ? AND municipio_ses IS NOT NULL)"
+            )
+            parametros.append(filtro)
     elif filtro:
         condicoes.append("ID_MN_RESI = ?")
         parametros.append(filtro)
@@ -267,8 +288,11 @@ def gerar_grafico_relacao_escolaridade_violencia(filtro=""):
     """
     parametros = ()
     if filtro in REGIOES:
-        query += " AND d.classificacao = ?"
-        parametros = (filtro,)
+        if filtro == "RMBH":
+            query += " AND d.classificacao IN ('RMBH', 'Belo Horizonte')"
+        else:
+            query += " AND d.classificacao = ?"
+            parametros = (filtro,)
 
     df = pd.read_sql_query(query, conexao, params=parametros)
     conexao.close()
@@ -286,7 +310,7 @@ def gerar_grafico_relacao_escolaridade_violencia(filtro=""):
         ax.plot(linha_x, np.polyval(coeficientes, linha_x), color="darkorange", linewidth=2)
     ax.set_xlabel("Adultos (18+) com ensino superior completo (%) — Censo 2022")
     ax.set_ylabel("Vítimas registradas na PC por 100 mil mulheres (Censo 2022) — 2022")
-    local = filtro or "Minas Gerais"
+    local = nome_local_exibicao(filtro)
     ax.set_title(f"Escolaridade e violência registrada em {local}")
     ax.grid(True, linestyle="--", alpha=0.35)
     _exibir_grafico(fig, ax)
@@ -341,7 +365,7 @@ def gerar_grafico_anual_tabela(nome_tabela: str, cidade: str):
     df = normalizar_periodo(df, "ano", 1900, 2100)
     if df.empty:
         conexao.close()
-        return st.write(f"Não há registros na tabela '{titulos.get(nome_tabela)}' para a cidade '{cidade}'.")
+        return st.write(f"Não há registros na tabela '{titulos.get(nome_tabela)}' para {nome_local_exibicao(cidade)}.")
 
     df = df.sort_values(by="ano", ascending=False)
 
@@ -350,7 +374,7 @@ def gerar_grafico_anual_tabela(nome_tabela: str, cidade: str):
     ax.set_xlabel("Ano")
     ax.set_ylabel("Número de Crimes")
 
-    ax.set_title(f"Gráfico Anual - Crimes contra a mulher em {cidade} - {titulos.get(nome_tabela)}")
+    ax.set_title(f"Gráfico Anual - Crimes contra a mulher em {nome_local_exibicao(cidade)} - {titulos.get(nome_tabela)}")
     ax.set_xticks(df["ano"])  # Mostra todos os anos no eixo x
     ax.grid(True, linestyle='--', alpha=0.5)
     _exibir_grafico(fig, ax)
@@ -401,7 +425,7 @@ def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str, ano=None):
     df = normalizar_periodo(df, "mes", 1, 12)
     if df.empty:
         conexao.close()
-        return st.write(f"Não há registros na tabela '{titulos.get(nome_tabela)}' para a cidade '{cidade}'.")
+        return st.write(f"Não há registros na tabela '{titulos.get(nome_tabela)}' para {nome_local_exibicao(cidade)}.")
 
     df = df.sort_values(by="mes", ascending=True)
     df["mes_nome"] = df["mes"].map(nomes_meses)
@@ -412,7 +436,7 @@ def gerar_grafico_mensal_tabela(nome_tabela: str, cidade: str, ano=None):
     ax.set_ylabel("Número de Crimes")
 
     periodo = f"{ano}" if ano is not None else "todo o histórico"
-    ax.set_title(f"Distribuição mensal — {titulos.get(nome_tabela)} em {cidade or 'Minas Gerais'} ({periodo})")
+    ax.set_title(f"Distribuição mensal — {titulos.get(nome_tabela)} em {nome_local_exibicao(cidade)} ({periodo})")
     ax.set_xticks(df["mes_nome"])  
     ax.grid(True, linestyle='--', alpha=0.5)
     _exibir_grafico(fig, ax)
@@ -460,7 +484,7 @@ def gerar_grafico_geral_anual(cidade: str):
     df_geral = pd.DataFrame(list(total_geral.items()), columns=["ano", "total"])
     if not total_geral:
         conexao.close()
-        return st.write(f"Não há registros em nenhuma tabela para a cidade '{cidade}'.")
+        return st.write(f"Não há registros em nenhuma tabela para {nome_local_exibicao(cidade)}.")
 
     df_geral = df_geral.sort_values(by="ano")
 
@@ -468,7 +492,7 @@ def gerar_grafico_geral_anual(cidade: str):
     ax.plot(df_geral["ano"], df_geral["total"], marker='o', linestyle='-', color='salmon')
     ax.set_xlabel("Ano")
     ax.set_ylabel("Número Total de Crimes")
-    ax.set_title(f"Gráfico Anual - Total de crimes contra a mulher em {cidade} (todas as tabelas)")
+    ax.set_title(f"Gráfico Anual - Total de crimes contra a mulher em {nome_local_exibicao(cidade)} (todas as tabelas)")
     ax.set_xticks(df_geral["ano"])
     ax.grid(True, linestyle='--', alpha=0.5)
     _exibir_grafico(fig, ax)
@@ -524,7 +548,7 @@ def gerar_grafico_geral_mensal(cidade: str, ano=None):
     df_geral = pd.DataFrame(list(total_geral.items()), columns=["mes", "total"])
     if not total_geral:
         conexao.close()
-        return st.write(f"Não há registros em nenhuma tabela para a cidade '{cidade}'.")
+        return st.write(f"Não há registros em nenhuma tabela para {nome_local_exibicao(cidade)}.")
 
     df_geral = df_geral.sort_values(by="mes")
     df_geral["mes_nome"] = df_geral["mes"].map(nomes_meses)
@@ -534,7 +558,7 @@ def gerar_grafico_geral_mensal(cidade: str, ano=None):
     ax.set_xlabel("Meses")
     ax.set_ylabel("Número Total de Crimes")
     periodo = f"{ano}" if ano is not None else "todo o histórico"
-    ax.set_title(f"Distribuição mensal — total das fontes em {cidade or 'Minas Gerais'} ({periodo})")
+    ax.set_title(f"Distribuição mensal — total das fontes em {nome_local_exibicao(cidade)} ({periodo})")
     ax.set_xticks(df_geral["mes_nome"])
     ax.grid(True, linestyle='--', alpha=0.5)
     _exibir_grafico(fig, ax)

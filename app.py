@@ -3,6 +3,7 @@ import folium
 import json
 import sqlite3
 import unicodedata
+import pandas as pd
 from streamlit_folium import st_folium
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut
@@ -65,10 +66,17 @@ def consultar_dados(filtro, ano):
 
         if filtro in {"Interior de MG", "RMBH", "Belo Horizonte"}:
             if tabela == "violenciaSES":
-                where += " AND ID_MN_RESI IN (SELECT municipio_ses FROM dimensao_municipio WHERE classificacao = ? AND municipio_ses IS NOT NULL)"
+                if filtro == "RMBH":
+                    where += " AND ID_MN_RESI IN (SELECT municipio_ses FROM dimensao_municipio WHERE classificacao IN ('RMBH', 'Belo Horizonte') AND municipio_ses IS NOT NULL)"
+                else:
+                    where += " AND ID_MN_RESI IN (SELECT municipio_ses FROM dimensao_municipio WHERE classificacao = ? AND municipio_ses IS NOT NULL)"
+                    parametros.append(filtro)
             else:
-                where += " AND municipio_cod IN (SELECT municipio_cod FROM dimensao_municipio WHERE classificacao = ?)"
-            parametros.append(filtro)
+                if filtro == "RMBH":
+                    where += " AND municipio_cod IN (SELECT municipio_cod FROM dimensao_municipio WHERE classificacao IN ('RMBH', 'Belo Horizonte'))"
+                else:
+                    where += " AND municipio_cod IN (SELECT municipio_cod FROM dimensao_municipio WHERE classificacao = ?)"
+                    parametros.append(filtro)
         elif filtro:
             if tabela == "violenciaSES":
                 where += " AND ID_MN_RESI = ?"
@@ -91,6 +99,67 @@ def consultar_dados(filtro, ano):
 
     conn.close()
     return dados
+
+
+@st.cache_data
+def consultar_violencia_por_cidade(filtro, ano):
+    ano_ses = ""
+    ano_pc = ""
+    ano_feminicidio = ""
+    parametros = []
+    if ano is not None:
+        ano_ses = "AND CAST(CASE WHEN substr(trim(s.DT_NOTIFIC),1,4) GLOB '[0-9][0-9][0-9][0-9]' THEN substr(trim(s.DT_NOTIFIC),1,4) ELSE substr(trim(s.DT_NOTIFIC),-4) END AS INTEGER) = ?"
+        ano_pc = "AND CAST(ano AS INTEGER) = ?"
+        ano_feminicidio = "AND CAST(ano AS INTEGER) = ?"
+        parametros.extend([ano, ano, ano])
+
+    condicao_regiao = ""
+    if filtro == "RMBH":
+        condicao_regiao = "AND d.classificacao IN ('RMBH', 'Belo Horizonte')"
+    elif filtro == "Interior de MG":
+        condicao_regiao = "AND d.classificacao = ?"
+        parametros.append(filtro)
+
+    consulta = f"""
+        WITH ses AS (
+            SELECT d.municipio_cod, COUNT(*) AS total
+            FROM violenciaSES s
+            JOIN dimensao_municipio d ON d.municipio_ses = s.ID_MN_RESI
+            WHERE 1=1 {ano_ses}
+            GROUP BY d.municipio_cod
+        ), pc AS (
+            SELECT municipio_cod, COUNT(*) AS total
+            FROM violenciaPc
+            WHERE 1=1 {ano_pc}
+            GROUP BY municipio_cod
+        ), fem AS (
+            SELECT municipio_cod, COUNT(*) AS total
+            FROM feminicidio
+            WHERE 1=1 {ano_feminicidio}
+            GROUP BY municipio_cod
+        )
+        SELECT
+            COALESCE(NULLIF(TRIM(d.municipio_ses), ''), d.municipio_nome) AS cidade,
+            COALESCE(ses.total, 0) AS notificacoes_ses,
+            COALESCE(pc.total, 0) AS registros_pc,
+            COALESCE(fem.total, 0) AS feminicidios,
+            COALESCE(ses.total, 0) + COALESCE(pc.total, 0) + COALESCE(fem.total, 0)
+                AS total_registros
+        FROM dimensao_municipio d
+        LEFT JOIN ses USING (municipio_cod)
+        LEFT JOIN pc USING (municipio_cod)
+        LEFT JOIN fem USING (municipio_cod)
+        WHERE 1=1 {condicao_regiao}
+          AND (COALESCE(ses.total, 0) + COALESCE(pc.total, 0) + COALESCE(fem.total, 0)) > 0
+        ORDER BY total_registros DESC, cidade COLLATE NOCASE ASC
+    """
+    with sqlite3.connect("database.db") as conexao:
+        return pd.read_sql_query(consulta, conexao, params=parametros)
+
+
+def alterar_pagina(chave, variacao, total_paginas):
+    atual = st.session_state.get(chave, 0)
+    st.session_state[chave] = min(max(atual + variacao, 0), total_paginas - 1)
 
 
 @st.cache_data
@@ -127,8 +196,11 @@ def consultar_indicadores_ibge(filtro, ano):
     condicao = "1=1"
     regioes = {"Interior de MG", "RMBH", "Belo Horizonte"}
     if filtro in regioes:
-        condicao = "classificacao = ?"
-        parametros.append(filtro)
+        if filtro == "RMBH":
+            condicao = "classificacao IN ('RMBH', 'Belo Horizonte')"
+        else:
+            condicao = "classificacao = ?"
+            parametros.append(filtro)
     elif filtro:
         condicao = (
             "REPLACE(REPLACE(municipio_nome, '-', ''), ' ', '') = "
@@ -198,7 +270,9 @@ def normalizar_cidade(nome):
     return nome.upper()
 
 def mostrar_dados_resumo(cidade, ano, dados):
-    nome_exibicao = "Minas Gerais" if not cidade.strip() else cidade
+    nome_exibicao = "Minas Gerais" if not cidade.strip() else (
+        "Região Metropolitana de Belo Horizonte" if cidade == "RMBH" else cidade
+    )
     periodo = "todo o histórico disponível" if ano is None else f"ano de {ano}"
 
     st.markdown(f"""
@@ -225,7 +299,7 @@ def mostrar_dados_resumo(cidade, ano, dados):
 
 area = st.selectbox(
     "Filtrar por:",
-    ["Minas Gerais", "Interior de MG", "RMBH", "Belo Horizonte", "Cidade específica"],
+    ["Minas Gerais", "Interior de MG", "Região Metropolitana de Belo Horizonte", "Cidade específica"],
 )
 cidade = ""
 if area == "Cidade específica":
@@ -235,7 +309,12 @@ if area == "Cidade específica":
         index=None,
         placeholder="Ex: Belo Horizonte",
     )
-filtro = cidade if area == "Cidade específica" and cidade else ("" if area == "Minas Gerais" else area)
+filtros_area = {
+    "Minas Gerais": "",
+    "Interior de MG": "Interior de MG",
+    "Região Metropolitana de Belo Horizonte": "RMBH",
+}
+filtro = cidade if area == "Cidade específica" and cidade else filtros_area.get(area, "")
 if area == "Cidade específica" and not cidade:
     st.info("Selecione uma cidade para continuar.")
     st.stop()
@@ -266,8 +345,12 @@ if cidade and not codigo_cidade_selecionada:
 cores_regiao = {
     "Interior de MG": "#f4a261",
     "RMBH": "#9b5de5",
-    "Belo Horizonte": "#e63946",
 }
+
+def municipio_na_regiao(classificacao, regiao):
+    if regiao == "RMBH":
+        return classificacao in {"RMBH", "Belo Horizonte"}
+    return classificacao == regiao
 
 def estilo_municipio(feature):
     propriedades = feature.get("properties", {})
@@ -276,8 +359,8 @@ def estilo_municipio(feature):
 
     if codigo_cidade_selecionada and codigo == codigo_cidade_selecionada:
         return {"fillColor": "#e63946", "color": "#ffd166", "weight": 2.5, "fillOpacity": 0.75}
-    if area in cores_regiao and classificacao == area:
-        return {"fillColor": cores_regiao[area], "color": "#ffffff", "weight": 1.4, "fillOpacity": 0.68}
+    if filtro in cores_regiao and municipio_na_regiao(classificacao, filtro):
+        return {"fillColor": cores_regiao[filtro], "color": "#ffffff", "weight": 1.4, "fillOpacity": 0.68}
     return {"fillColor": "#1f6feb", "color": "#cbd5e1", "weight": 0.55, "fillOpacity": 0.16}
 
 folium.GeoJson(
@@ -288,14 +371,18 @@ folium.GeoJson(
     tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["Município:"]),
 ).add_to(m)
 
-if area in cores_regiao:
+if filtro in cores_regiao:
     municipios_destacados = [
         feature for feature in geojson_mg["features"]
-        if classificacao_por_codigo.get(
-            str(feature.get("properties", {}).get("id", "")).zfill(7)
-        ) == area
+        if municipio_na_regiao(
+            classificacao_por_codigo.get(
+                str(feature.get("properties", {}).get("id", "")).zfill(7)
+            ),
+            filtro,
+        )
     ]
-    descricao_destaque = f"{len(municipios_destacados)} municípios de {area} destacados no mapa."
+    nome_regiao = "Região Metropolitana de Belo Horizonte" if filtro == "RMBH" else "Interior de MG"
+    descricao_destaque = f"{len(municipios_destacados)} municípios de {nome_regiao} destacados no mapa."
 elif codigo_cidade_selecionada:
     municipios_destacados = [
         feature for feature in geojson_mg["features"]
@@ -306,8 +393,8 @@ else:
     municipios_destacados = []
     descricao_destaque = None
 
-# Aproxima o enquadramento à RMBH ou ao município selecionado.
-if municipios_destacados and area != "Interior de MG":
+# Aproxima o enquadramento à região selecionada ou ao município individual.
+if municipios_destacados and filtro != "Interior de MG":
     coordenadas = []
 
     def coletar_coordenadas(valor):
@@ -395,7 +482,15 @@ with st.container():
             st.markdown("### Relação exploratória entre escolaridade e violência (2022)")
             gerar_grafico_relacao_escolaridade_violencia(filtro)
 
-    tabs = st.tabs(["Detalhamento SES", "Natureza dos crimes — PC", "Evolução temporal"])
+    nomes_abas = [
+        "Detalhamento SES",
+        "Natureza dos crimes — PC",
+        "Evolução temporal",
+    ]
+    mostrar_ranking_cidades = area != "Cidade específica"
+    if mostrar_ranking_cidades:
+        nomes_abas.append("Violência por cidade")
+    tabs = st.tabs(nomes_abas)
     with tabs[0]:
         dimensao_grafico = st.selectbox(
             "Distribuir notificações SES por:",
@@ -432,6 +527,71 @@ with st.container():
             gerar_grafico_mensal_tabela("violenciaPc", filtro, ano=ano)
             gerar_grafico_mensal_tabela("feminicidio", filtro, ano=ano)
             gerar_grafico_geral_mensal(filtro, ano=ano)
+
+    if mostrar_ranking_cidades:
+        with tabs[3]:
+            periodo_ranking = "todo o histórico" if ano is None else str(ano)
+            st.markdown(f"#### Municípios com mais registros — {periodo_ranking}")
+            st.caption(
+                "O ranking soma os registros da SES, da Polícia Civil e de feminicídio. "
+                "As fontes têm definições diferentes e não foram deduplicadas; na SES, "
+                "a cidade é a de residência, enquanto PC e feminicídio usam o local do fato."
+            )
+            ranking = consultar_violencia_por_cidade(filtro, ano)
+            if ranking.empty:
+                st.info("Não há registros para as cidades deste recorte.")
+            else:
+                if area == "Minas Gerais":
+                    escopo_pagina = "minas_gerais"
+                elif area == "Interior de MG":
+                    escopo_pagina = "interior"
+                else:
+                    escopo_pagina = "regiao_metropolitana"
+                periodo_pagina = "historico" if ano is None else str(ano)
+                chave_pagina = f"ranking_cidades_{escopo_pagina}_{periodo_pagina}"
+                total_paginas = max(1, (len(ranking) + 9) // 10)
+                pagina_atual = min(
+                    st.session_state.get(chave_pagina, 0), total_paginas - 1
+                )
+                st.session_state[chave_pagina] = pagina_atual
+
+                anterior, informacao_pagina, proxima = st.columns([1, 4, 1])
+                with anterior:
+                    st.button(
+                        "←",
+                        key=f"{chave_pagina}_anterior",
+                        help="Página anterior",
+                        disabled=pagina_atual == 0,
+                        on_click=alterar_pagina,
+                        args=(chave_pagina, -1, total_paginas),
+                        use_container_width=True,
+                    )
+                inicio = pagina_atual * 10
+                fim = min(inicio + 10, len(ranking))
+                with informacao_pagina:
+                    st.write(
+                        f"Página {pagina_atual + 1} de {total_paginas} · "
+                        f"cidades {inicio + 1}–{fim} de {len(ranking)}"
+                    )
+                with proxima:
+                    st.button(
+                        "→",
+                        key=f"{chave_pagina}_proxima",
+                        help="Próxima página",
+                        disabled=pagina_atual >= total_paginas - 1,
+                        on_click=alterar_pagina,
+                        args=(chave_pagina, 1, total_paginas),
+                        use_container_width=True,
+                    )
+
+                tabela_ranking = ranking.iloc[inicio:fim].rename(columns={
+                    "cidade": "Cidade",
+                    "notificacoes_ses": "Notificações SES",
+                    "registros_pc": "Registros PC",
+                    "feminicidios": "Feminicídios",
+                    "total_registros": "Total de registros",
+                })
+                st.dataframe(tabela_ranking, hide_index=True, use_container_width=True)
 
 
 
