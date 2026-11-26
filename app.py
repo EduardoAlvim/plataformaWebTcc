@@ -112,6 +112,15 @@ def consultar_anos_disponiveis():
         ]
 
 
+@st.cache_data
+def consultar_dimensao_mapa():
+    with sqlite3.connect("database.db") as conn:
+        return conn.execute(
+            "SELECT codigo_ibge, municipio_nome, classificacao "
+            "FROM dimensao_municipio"
+        ).fetchall()
+
+
 def consultar_indicadores_ibge(filtro, ano):
     conn = sqlite3.connect("database.db")
     parametros = []
@@ -231,14 +240,6 @@ if area == "Cidade específica" and not cidade:
     st.info("Selecione uma cidade para continuar.")
     st.stop()
 
-def buscar_poligono_cidade(nome_cidade):
-    for feature in geojson_mg["features"]:
-        props = feature.get("properties", {})
-        nome = props.get("name", "")
-        if normalizar_cidade(nome) == normalizar_cidade(nome_cidade):
-            return feature
-    return None
-
 # ---------- MAPA ----------
 m = folium.Map(
     location=[-18.5122, -44.5550],
@@ -246,35 +247,87 @@ m = folium.Map(
     tiles="cartodbdark_matter"
 )
 
-# Adiciona todos os municípios de MG (região demarcada em azul)
+# Relaciona os polígonos do GeoJSON com a dimensão territorial pelo código IBGE.
+municipios_mapa = consultar_dimensao_mapa()
+
+classificacao_por_codigo = {
+    str(codigo).zfill(7): classificacao
+    for codigo, _, classificacao in municipios_mapa
+    if codigo
+}
+codigo_por_nome = {
+    normalizar_cidade(nome): str(codigo).zfill(7)
+    for codigo, nome, _ in municipios_mapa
+    if codigo and nome
+}
+codigo_cidade_selecionada = codigo_por_nome.get(normalizar_cidade(cidade)) if cidade else None
+if cidade and not codigo_cidade_selecionada:
+    st.warning("Não foi possível relacionar a cidade selecionada ao código municipal do mapa.")
+cores_regiao = {
+    "Interior de MG": "#f4a261",
+    "RMBH": "#9b5de5",
+    "Belo Horizonte": "#e63946",
+}
+
+def estilo_municipio(feature):
+    propriedades = feature.get("properties", {})
+    codigo = str(propriedades.get("id", "")).zfill(7)
+    classificacao = classificacao_por_codigo.get(codigo)
+
+    if codigo_cidade_selecionada and codigo == codigo_cidade_selecionada:
+        return {"fillColor": "#e63946", "color": "#ffd166", "weight": 2.5, "fillOpacity": 0.75}
+    if area in cores_regiao and classificacao == area:
+        return {"fillColor": cores_regiao[area], "color": "#ffffff", "weight": 1.4, "fillOpacity": 0.68}
+    return {"fillColor": "#1f6feb", "color": "#cbd5e1", "weight": 0.55, "fillOpacity": 0.16}
+
 folium.GeoJson(
     geojson_mg,
-    name="Minas Gerais",
-    style_function=lambda feature: {
-        "fillColor": "blue",
-        "color": "white",
-        "weight": 1,
-        "fillOpacity": 0.2
-    }
+    name="Municípios de Minas Gerais",
+    style_function=estilo_municipio,
+    highlight_function=lambda feature: {"weight": 2, "color": "#ffffff", "fillOpacity": 0.82},
+    tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["Município:"]),
 ).add_to(m)
 
-# Adiciona o polígono da cidade selecionada (destacada em vermelho)
-if cidade:
-    poligono = buscar_poligono_cidade(cidade)
-    if poligono:
-        folium.GeoJson(
-            poligono,
-            name=cidade,
-            style_function=lambda feature: {
-                "fillColor": "red",
-                "color": "yellow",
-                "weight": 3,
-                "fillOpacity": 0.4
-            },
-            tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["Cidade:"])
-        ).add_to(m)
-    else:
-        st.warning("⚠️ Cidade não encontrada no arquivo GeoJSON.")
+if area in cores_regiao:
+    municipios_destacados = [
+        feature for feature in geojson_mg["features"]
+        if classificacao_por_codigo.get(
+            str(feature.get("properties", {}).get("id", "")).zfill(7)
+        ) == area
+    ]
+    descricao_destaque = f"{len(municipios_destacados)} municípios de {area} destacados no mapa."
+elif codigo_cidade_selecionada:
+    municipios_destacados = [
+        feature for feature in geojson_mg["features"]
+        if str(feature.get("properties", {}).get("id", "")).zfill(7) == codigo_cidade_selecionada
+    ]
+    descricao_destaque = f"{cidade} destacada no mapa."
+else:
+    municipios_destacados = []
+    descricao_destaque = None
+
+# Aproxima o enquadramento à RMBH ou ao município selecionado.
+if municipios_destacados and area != "Interior de MG":
+    coordenadas = []
+
+    def coletar_coordenadas(valor):
+        if isinstance(valor, (list, tuple)):
+            if len(valor) >= 2 and all(isinstance(item, (int, float)) for item in valor[:2]):
+                coordenadas.append((valor[1], valor[0]))
+            else:
+                for item in valor:
+                    coletar_coordenadas(item)
+
+    for feature in municipios_destacados:
+        coletar_coordenadas(feature.get("geometry", {}).get("coordinates", []))
+    if coordenadas:
+        m.fit_bounds(
+            [
+                [min(lat for lat, _ in coordenadas), min(lon for _, lon in coordenadas)],
+                [max(lat for lat, _ in coordenadas), max(lon for _, lon in coordenadas)],
+            ],
+            padding=(18, 18),
+        )
 
 # Sempre mostra seleção e mapa, mesmo que nenhuma cidade seja escolhida
 anos_disponiveis = consultar_anos_disponiveis()
@@ -288,6 +341,8 @@ with st.container():
     col_mapa, col_dados = st.columns([0.5, 0.5])
 
     with col_mapa:
+        if descricao_destaque:
+            st.caption(descricao_destaque)
         st_folium(m, width=450, height=500)
 
     with col_dados:
