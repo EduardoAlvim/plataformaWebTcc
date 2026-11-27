@@ -219,19 +219,98 @@ def consultar_indicadores_ibge(filtro, ano):
         return {}
 
     marcadores = ",".join("?" for _ in codigos)
-    populacao_estimada, pib_mil = conn.execute(
-        f"SELECT SUM(populacao_estimada), SUM(pib_mil_reais) "
-        f"FROM indicadores_ibge_anual WHERE ano = ? AND municipio_cod IN ({marcadores})",
-        [ano, *codigos],
+    clausula_ano = " AND ano <= ?" if ano is not None else ""
+    parametros_ano = [ano] if ano is not None else []
+    ano_populacao, ano_pib = conn.execute(
+        f"SELECT MAX(CASE WHEN populacao_estimada IS NOT NULL THEN ano END), "
+        f"MAX(CASE WHEN pib_mil_reais IS NOT NULL THEN ano END) "
+        f"FROM indicadores_ibge_anual WHERE municipio_cod IN ({marcadores}){clausula_ano}",
+        [*codigos, *parametros_ano],
     ).fetchone()
-    censo = (None, None, None, None, None)
-    if ano == 2022:
-        censo = conn.execute(
-            f"SELECT SUM(populacao_censo), SUM(area_km2), SUM(populacao_18mais), "
-            f"SUM(populacao_18mais_superior), SUM(populacao_18mais_baixa_escolaridade) "
-            f"FROM indicadores_ibge_censo2022 WHERE municipio_cod IN ({marcadores})",
-            codigos,
+    populacao_estimada = pib_mil = populacao_pib = None
+    if ano_populacao is not None:
+        populacao_estimada = conn.execute(
+            f"SELECT SUM(populacao_estimada) FROM indicadores_ibge_anual "
+            f"WHERE ano = ? AND municipio_cod IN ({marcadores})",
+            [ano_populacao, *codigos],
+        ).fetchone()[0]
+    if ano_pib is not None:
+        pib_mil, populacao_pib = conn.execute(
+            f"SELECT SUM(pib_mil_reais), SUM(populacao_estimada) "
+            f"FROM indicadores_ibge_anual WHERE ano = ? AND municipio_cod IN ({marcadores})",
+            [ano_pib, *codigos],
         ).fetchone()
+    # Indicadores censitários são exibidos pelo ano real de referência, usando
+    # o Censo mais recente que não ultrapassa o período analisado.
+    censo = (None, None, None, None, None)
+    ano_censo = None
+    try:
+        clausula_censo = " AND ano <= ?" if ano is not None else ""
+        params_censo = [*codigos, ano] if ano is not None else codigos
+        ano_censo = conn.execute(
+            f"SELECT MAX(ano) FROM indicadores_ibge_perfil_censitario "
+            f"WHERE municipio_cod IN ({marcadores}){clausula_censo}",
+            params_censo,
+        ).fetchone()[0]
+        if ano_censo is not None:
+            censo = conn.execute(
+                f"SELECT SUM(populacao_censo), SUM(area_km2), SUM(populacao_18mais), "
+                f"SUM(populacao_18mais_superior), SUM(populacao_18mais_baixa_escolaridade) "
+                f"FROM indicadores_ibge_perfil_censitario "
+                f"WHERE ano = ? AND municipio_cod IN ({marcadores})",
+                [ano_censo, *codigos],
+            ).fetchone()
+    except sqlite3.OperationalError:
+        pass
+    populacao_censo = censo[0]
+    idhm = ano_idhm = None
+    try:
+        limite_idhm = " AND ano <= ?" if ano is not None else ""
+        parametros_idhm = [ano] if ano is not None else []
+        if not filtro:
+            idhm, ano_idhm = conn.execute(
+                "SELECT valor, ano FROM indicadores_ibge_idhm "
+                "WHERE municipio_cod = 'MG'" + limite_idhm + " "
+                "ORDER BY ano DESC LIMIT 1",
+                parametros_idhm,
+            ).fetchone() or (None, None)
+        else:
+            idhm, ano_idhm = conn.execute(
+                f"WITH ultimos AS (SELECT municipio_cod, MAX(ano) AS ano "
+                f"FROM indicadores_ibge_idhm WHERE municipio_cod IN ({marcadores})"
+                f"{limite_idhm} GROUP BY municipio_cod) "
+                f"SELECT AVG(i.valor), MAX(i.ano) FROM indicadores_ibge_idhm i "
+                f"JOIN ultimos u ON u.municipio_cod = i.municipio_cod AND u.ano = i.ano",
+                [*codigos, *parametros_idhm],
+            ).fetchone()
+    except sqlite3.OperationalError:
+        idhm, ano_idhm = None, None
+    try:
+        ano_pib_per_capita = conn.execute(
+            f"SELECT MAX(ano) FROM indicadores_ibge_per_capita "
+            f"WHERE municipio_cod IN ({marcadores}) AND valor IS NOT NULL{clausula_ano}",
+            [*codigos, *parametros_ano],
+        ).fetchone()[0]
+        pib_per_capita = None
+        if ano_pib_per_capita is not None:
+            pib_per_capita = conn.execute(
+                f"SELECT COALESCE(SUM(pc.valor * COALESCE(p.populacao_estimada, c.populacao_censo)) / "
+                f"NULLIF(SUM(COALESCE(p.populacao_estimada, c.populacao_censo)), 0), AVG(pc.valor)) "
+                f"FROM indicadores_ibge_per_capita pc "
+                f"LEFT JOIN indicadores_ibge_anual p ON p.municipio_cod = pc.municipio_cod AND p.ano = pc.ano "
+                f"LEFT JOIN indicadores_ibge_perfil_censitario c "
+                f"ON c.municipio_cod = pc.municipio_cod AND c.ano = pc.ano "
+                f"WHERE pc.ano = ? AND pc.municipio_cod IN ({marcadores})",
+                [ano_pib_per_capita, *codigos],
+            ).fetchone()[0]
+    except sqlite3.OperationalError:
+        ano_pib_per_capita = ano_pib
+        base_populacao = populacao_pib
+        pib_per_capita = pib_mil * 1000 / base_populacao if pib_mil and base_populacao else None
+    if pib_per_capita is None and pib_mil:
+        ano_pib_per_capita = ano_pib
+        base_populacao = populacao_pib
+        pib_per_capita = pib_mil * 1000 / base_populacao if base_populacao else None
     conn.close()
 
     populacao_censo, area_km2, adultos, adultos_superior, adultos_escolaridade_baixa = censo
@@ -243,11 +322,14 @@ def consultar_indicadores_ibge(filtro, ano):
         100 * adultos_escolaridade_baixa / adultos
         if adultos and adultos_escolaridade_baixa is not None else None
     )
-    populacao_ano = populacao_censo if ano == 2022 else populacao_estimada
-    pib_per_capita = pib_mil * 1000 / populacao_ano if pib_mil and populacao_ano else None
     return {
-        "ano": ano,
-        "populacao": populacao_ano,
+        "ano_populacao": ano_populacao,
+        "ano_pib": ano_pib,
+        "ano_censo": ano_censo,
+        "ano_pib_per_capita": ano_pib_per_capita,
+        "idhm": idhm,
+        "ano_idhm": ano_idhm,
+        "populacao": populacao_estimada,
         "populacao_censo": populacao_censo,
         "area_km2": area_km2,
         "densidade": densidade,
@@ -437,46 +519,42 @@ with st.container():
         if not filtro:
             st.info("Exibindo os dados gerais do estado de Minas Gerais.")
 
-    indicadores = consultar_indicadores_ibge(filtro, ano) if ano is not None else {}
-    if ano is None:
-        st.info("O perfil do IBGE exige um ano de referência. Selecione um ano para consultar esses indicadores.")
+    indicadores = consultar_indicadores_ibge(filtro, ano)
     if indicadores:
         def formatar_numero(valor, casas=0):
             if valor is None:
                 return None
             return f"{valor:,.{casas}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
-        cartoes = []
-        if indicadores["populacao"] is not None:
-            fonte_populacao = "Censo" if ano == 2022 else "estimada"
-            cartoes.append((f"População {fonte_populacao} ({ano})", formatar_numero(indicadores["populacao"])))
-        if indicadores["area_km2"] is not None:
-            cartoes.append((f"Área territorial ({ano})", f"{formatar_numero(indicadores['area_km2'], 2)} km²"))
-        if indicadores["densidade"] is not None:
-            cartoes.append((f"Densidade demográfica ({ano})", f"{formatar_numero(indicadores['densidade'], 2)} hab./km²"))
-        if indicadores["pib_mil_reais"] is not None:
-            pib_bilhoes = indicadores["pib_mil_reais"] / 1_000_000
-            cartoes.append((f"PIB total ({ano})", f"R$ {formatar_numero(pib_bilhoes, 2)} bi"))
-        if indicadores["pib_per_capita"] is not None:
-            cartoes.append((f"PIB per capita ({ano})", f"R$ {formatar_numero(indicadores['pib_per_capita'], 2)}"))
-        if indicadores["percentual_superior"] is not None:
-            cartoes.append((f"Adultos com superior completo ({ano})", f"{formatar_numero(indicadores['percentual_superior'], 2)}%"))
-        if indicadores["percentual_escolaridade_baixa"] is not None:
-            cartoes.append((f"Adultos sem instrução/fundamental incompleto ({ano})", f"{formatar_numero(indicadores['percentual_escolaridade_baixa'], 2)}%"))
+        cartoes = [
+            (f"População estimada ({indicadores['ano_populacao'] or '—'})", formatar_numero(indicadores["populacao"]) or "Não disponível"),
+            (f"População do Censo ({indicadores['ano_censo'] or '—'})", formatar_numero(indicadores["populacao_censo"]) or "Não disponível"),
+            (f"Densidade demográfica ({indicadores['ano_censo'] or '—'})", f"{formatar_numero(indicadores['densidade'], 2)} hab./km²" if indicadores["densidade"] is not None else "Não disponível"),
+            (f"PIB total ({indicadores['ano_pib'] or '—'})", f"R$ {formatar_numero(indicadores['pib_mil_reais'] / 1_000_000, 2)} bi" if indicadores["pib_mil_reais"] is not None else "Não disponível"),
+            (f"PIB per capita ({indicadores['ano_pib_per_capita'] or indicadores['ano_pib'] or '—'})", f"R$ {formatar_numero(indicadores['pib_per_capita'], 2)}" if indicadores["pib_per_capita"] is not None else "Não disponível"),
+            (f"Adultos com superior completo ({indicadores['ano_censo'] or '—'})", f"{formatar_numero(indicadores['percentual_superior'], 2)}%" if indicadores["percentual_superior"] is not None else "Não disponível"),
+            (f"Adultos com baixa escolaridade ({indicadores['ano_censo'] or '—'})", f"{formatar_numero(indicadores['percentual_escolaridade_baixa'], 2)}%" if indicadores["percentual_escolaridade_baixa"] is not None else "Não disponível"),
+            (f"{'IDH' if not filtro else ('IDHM médio' if filtro in {'Interior de MG', 'RMBH'} else 'IDHM')} ({indicadores['ano_idhm'] or '—'})", formatar_numero(indicadores["idhm"], 3) or "Não disponível"),
+        ]
 
         st.markdown("---")
-        st.subheader(f"Perfil demográfico, econômico e educacional ({ano})")
+        st.subheader("Perfil demográfico, econômico e educacional")
+        texto_periodo = (
+            f"População estimada, PIB e IDH usam o dado mais recente até {ano}. "
+            if ano is not None
+            else "População estimada, PIB e IDH usam o dado mais recente disponível. "
+        )
         st.caption(
-            f"Fontes: IBGE/SIDRA. Indicadores exibidos somente quando disponíveis para {ano}. "
-            "O PIB per capita é calculado com o PIB e a população do mesmo ano."
+            texto_periodo
+            + (f"Dados censitários e educacionais usam o Censo mais recente disponível até {ano}. " if ano is not None else "Dados censitários e educacionais usam o Censo mais recente disponível. ")
+            + "Os anos de referência aparecem nos títulos. Fontes: IBGE/SIDRA; IDH estadual pela API de Pesquisas do IBGE e IDHM municipal pelo Ipeadata/Atlas. "
+            + ("Para regiões, o IDHM é a média dos municípios com dado disponível." if filtro in {"Interior de MG", "RMBH"} else "")
         )
         if cartoes:
             for inicio in range(0, len(cartoes), 4):
                 linha = st.columns(min(4, len(cartoes) - inicio))
                 for coluna, (rotulo, valor) in zip(linha, cartoes[inicio:inicio + 4]):
                     coluna.metric(rotulo, valor)
-        else:
-            st.info(f"Não há indicadores do IBGE disponíveis para {ano} nesta seleção.")
 
         if ano == 2022:
             st.markdown("### Relação exploratória entre escolaridade e violência (2022)")

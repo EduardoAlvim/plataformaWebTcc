@@ -1,6 +1,7 @@
 """Baixa indicadores municipais do IBGE e atualiza o banco local."""
 
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import requests
@@ -9,6 +10,8 @@ import requests
 PASTA_BD = Path(__file__).resolve().parent
 CAMINHO_BANCO = PASTA_BD.parent / "database.db"
 BASE_IBGE = "https://servicodados.ibge.gov.br/api"
+PESQUISA_IDHM = 37
+INDICADOR_IDHM = 30255
 SESSAO = requests.Session()
 SESSAO.headers.update({"User-Agent": "plataformaWebTcc/1.0 (indicadores municipais)"})
 
@@ -119,6 +122,56 @@ def indexar_censo(resposta):
     return saida
 
 
+def indexar_escolaridade_2010(resposta):
+    """Agrega os grupos etários adultos da tabela 3540 (Censo 2010)."""
+    saida = {}
+    faixas_adultas = {"92982", "1144", "1145", "1146", "1147", "1148", "1149", "1150", "1151"}
+    for variavel in resposta:
+        if str(variavel.get("id")) != "140":
+            continue
+        for resultado in variavel.get("resultados", []):
+            classificacoes = {
+                str(item["id"]): next(iter(item["categoria"]))
+                for item in resultado.get("classificacoes", [])
+            }
+            nivel = classificacoes.get("1568")
+            idade = classificacoes.get("58")
+            if idade not in faixas_adultas:
+                continue
+            for serie in resultado.get("series", []):
+                codigo = str(serie["localidade"]["id"])
+                valor = next(iter(serie.get("serie", {}).values()), None)
+                try:
+                    quantidade = int(float(valor))
+                except (TypeError, ValueError):
+                    continue
+                niveis = saida.setdefault(codigo, {})
+                niveis[nivel] = niveis.get(nivel, 0) + quantidade
+    return saida
+
+
+def indexar_total_adultos_2010(resposta):
+    """Soma a população adulta sem abrir por nível de instrução."""
+    saida = {}
+    faixas_adultas = {"92982", "1144", "1145", "1146", "1147", "1148", "1149", "1150", "1151"}
+    for variavel in resposta:
+        for resultado in variavel.get("resultados", []):
+            classificacoes = {
+                str(item["id"]): next(iter(item["categoria"]))
+                for item in resultado.get("classificacoes", [])
+            }
+            if classificacoes.get("58") not in faixas_adultas:
+                continue
+            for serie in resultado.get("series", []):
+                codigo = str(serie["localidade"]["id"])
+                valor = next(iter(serie.get("serie", {}).values()), None)
+                try:
+                    saida[codigo] = saida.get(codigo, 0) + int(float(valor))
+                except (TypeError, ValueError):
+                    continue
+    return saida
+
+
 def indexar_variaveis(resposta):
     saida = {}
     for variavel in resposta:
@@ -134,10 +187,79 @@ def indexar_variaveis(resposta):
     return saida
 
 
+def extrair_series_idhm(resposta):
+    """Lê localidades e anos da resposta da API de Pesquisas do IBGE."""
+    series = []
+
+    def percorrer(item):
+        if isinstance(item, dict):
+            res = item.get("res")
+            localidade = item.get("localidade")
+            if isinstance(res, dict) and localidade is not None:
+                codigo = localidade.get("id") if isinstance(localidade, dict) else localidade
+                if codigo is not None:
+                    for ano, valor in res.items():
+                        try:
+                            valor = float(str(valor).replace(",", "."))
+                            series.append((str(codigo), int(ano), valor))
+                        except (TypeError, ValueError):
+                            continue
+            for chave, valor in item.items():
+                if chave != "res" or not isinstance(res, dict):
+                    percorrer(valor)
+        elif isinstance(item, list):
+            for valor in item:
+                percorrer(valor)
+
+    percorrer(resposta)
+    return series
+
+
+def baixar_series_idhm(codigos_por_municipio):
+    """Obtém IDH estadual pela API IBGE e IDHM municipal pela API oficial Ipeadata."""
+    base_ibge = (
+        f"{BASE_IBGE}/v1/pesquisas/{PESQUISA_IDHM}/indicadores/"
+        f"{INDICADOR_IDHM}/resultados"
+    )
+    series = [
+        ("MG", ano, valor)
+        for codigo, ano, valor in extrair_series_idhm(buscar_json(f"{base_ibge}/31"))
+        if codigo == "31"
+    ]
+
+    # A rota do IBGE para resultados municipais retorna [] para o indicador 30255.
+    # O Ipeadata publica os valores municipais do Atlas (1991, 2000 e 2010) por API OData.
+    url_ipeadata = "https://www.ipeadata.gov.br/api/odata4/ValoresSerie(SERCODIGO='ADH_IDHM')"
+    resposta = SESSAO.get(url_ipeadata, timeout=120)
+    resposta.raise_for_status()
+    valores = resposta.json().get("value", [])
+    codigo_pc_por_ibge = {
+        str(codigo_ibge): str(codigo_pc).zfill(6)
+        for codigo_pc, codigo_ibge in codigos_por_municipio.items()
+    }
+    municipios = []
+    for registro in valores:
+        municipio_cod = codigo_pc_por_ibge.get(str(registro.get("TERCODIGO")))
+        data = registro.get("VALDATA", "")
+        valor = registro.get("VALVALOR")
+        if not municipio_cod or not data or valor is None:
+            continue
+        try:
+            municipios.append((municipio_cod, int(data[:4]), float(valor)))
+        except (TypeError, ValueError):
+            continue
+    if not municipios:
+        raise ValueError("A API do Ipeadata não retornou valores municipais de IDHM para Minas Gerais.")
+    return series + municipios
+
+
 def main():
-    anos_populacao = list(range(2010, 2024))
-    anos_populacao_recentes = [2024, 2025, 2026]
-    anos_pib = list(range(2010, 2024))
+    ano_corrente = date.today().year
+    anos_populacao = list(range(2010, min(ano_corrente, 2023) + 1))
+    anos_populacao_recentes = (
+        list(range(2024, ano_corrente + 1)) if ano_corrente >= 2024 else []
+    )
+    anos_pib = list(range(2010, ano_corrente + 1))
     with sqlite3.connect(CAMINHO_BANCO) as conn:
         codigos_por_municipio = codigos_ibge_mg(conn)
         conn.commit()
@@ -147,9 +269,10 @@ def main():
         populacao = indice_series(
             consultar_agregado(6579, anos_populacao, [9324], codigos)
         )
-        populacao.update(indice_series(
-            consultar_agregado(6579, anos_populacao_recentes, [9324], codigos)
-        ))
+        if anos_populacao_recentes:
+            populacao.update(indice_series(
+                consultar_agregado(6579, anos_populacao_recentes, [9324], codigos)
+            ))
         print("Baixando população, área e densidade do Censo 2022...")
         resposta_censo = consultar_agregado(4714, [2022], [93, 6318, 614], codigos)
         valores_censo = indexar_variaveis(resposta_censo)
@@ -174,11 +297,35 @@ def main():
                 "58[95253]|2[6794]|86[95251]",
             )
         )
+        print("Baixando população e escolaridade do Censo 2010...")
+        populacao_censo_2010 = indice_series(
+            consultar_agregado(608, [2010], [93], codigos)
+        )
+        area_densidade_2010 = indexar_variaveis(
+            consultar_agregado(1301, [2010], [615, 616], codigos)
+        )
+        escolaridade_2010 = indexar_escolaridade_2010(
+            consultar_agregado(
+                3540, [2010], [140], codigos,
+                classificacao="1568[9493,99713]|58[92982,1144,1145,1146,1147,1148,1149,1150,1151]",
+            )
+        )
+        total_adultos_2010 = indexar_total_adultos_2010(
+            consultar_agregado(
+                3540, [2010], [140], codigos,
+                classificacao="58[92982,1144,1145,1146,1147,1148,1149,1150,1151]",
+            )
+        )
         print("Baixando PIB municipal anual...")
         pib = indice_series(
             consultar_agregado(5938, anos_pib, [37], codigos)
         )
-
+        print("Baixando IDH estadual do IBGE e IDHM municipal do Ipeadata...")
+        try:
+            series_idhm = baixar_series_idhm(codigos_por_municipio)
+        except (requests.RequestException, ValueError, TypeError) as erro:
+            series_idhm = []
+            print(f"Aviso: não foi possível atualizar o IDHM: {erro}")
         conn.execute("""CREATE TABLE IF NOT EXISTS indicadores_ibge_anual (
             municipio_cod TEXT NOT NULL,
             ano INTEGER NOT NULL,
@@ -195,6 +342,29 @@ def main():
             populacao_18mais_superior REAL,
             populacao_18mais_baixa_escolaridade REAL,
             populacao_feminina REAL
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS indicadores_ibge_perfil_censitario (
+            municipio_cod TEXT NOT NULL,
+            ano INTEGER NOT NULL,
+            populacao_censo REAL,
+            area_km2 REAL,
+            densidade_demografica REAL,
+            populacao_18mais REAL,
+            populacao_18mais_superior REAL,
+            populacao_18mais_baixa_escolaridade REAL,
+            PRIMARY KEY (municipio_cod, ano)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS indicadores_ibge_per_capita (
+            municipio_cod TEXT NOT NULL,
+            ano INTEGER NOT NULL,
+            valor REAL,
+            PRIMARY KEY (municipio_cod, ano)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS indicadores_ibge_idhm (
+            municipio_cod TEXT NOT NULL,
+            ano INTEGER NOT NULL,
+            valor REAL NOT NULL,
+            PRIMARY KEY (municipio_cod, ano)
         )""")
         colunas_censo = {
             linha[1] for linha in conn.execute("PRAGMA table_info(indicadores_ibge_censo2022)")
@@ -244,12 +414,44 @@ def main():
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             linhas_censo,
         )
+        linhas_perfil = []
+        for codigo_pc, codigo_ibge in codigos_por_municipio.items():
+            niveis_2010 = escolaridade_2010.get(codigo_ibge, {})
+            adultos_2010 = total_adultos_2010.get(codigo_ibge)
+            linhas_perfil.extend([
+                (codigo_pc, 2010, populacao_censo_2010.get((codigo_ibge, 2010)),
+                 area_densidade_2010.get((codigo_ibge, "615")),
+                 area_densidade_2010.get((codigo_ibge, "616")),
+                 adultos_2010, niveis_2010.get("99713"), niveis_2010.get("9493")),
+                (codigo_pc, 2022,
+                 valores_censo.get((codigo_ibge, "93")),
+                 valores_censo.get((codigo_ibge, "6318")),
+                 valores_censo.get((codigo_ibge, "614")),
+                 escolaridade.get(codigo_ibge, {}).get("120704"),
+                 escolaridade.get(codigo_ibge, {}).get("99713"),
+                 escolaridade.get(codigo_ibge, {}).get("9493")),
+            ])
+        conn.execute("DELETE FROM indicadores_ibge_perfil_censitario")
+        conn.executemany(
+            "INSERT INTO indicadores_ibge_perfil_censitario "
+            "(municipio_cod, ano, populacao_censo, area_km2, densidade_demografica, "
+            "populacao_18mais, populacao_18mais_superior, populacao_18mais_baixa_escolaridade) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            linhas_perfil,
+        )
+        if series_idhm:
+            conn.executemany(
+                "INSERT OR REPLACE INTO indicadores_ibge_idhm "
+                "(municipio_cod, ano, valor) VALUES (?, ?, ?)",
+                series_idhm,
+            )
         conn.commit()
 
     print(
         f"Indicadores IBGE atualizados para {len(codigos_por_municipio)} municípios. "
         f"População: {resumir_periodos(ano for _, ano in populacao)}; "
-        f"PIB: {resumir_periodos(ano for _, ano in pib)}; Censo: 2022."
+        f"PIB: {resumir_periodos(ano for _, ano in pib)}; Censos: 2010 e 2022; "
+        f"IDH/IDHM: {len(series_idhm)} registros (estado via IBGE e municípios via Ipeadata)."
     )
 
 
